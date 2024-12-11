@@ -1,8 +1,9 @@
 import pandas as pd
 import numpy as np
 import time
+import os
 
-from src.batch import *
+from batch import *
 
 from torchrec import *
 
@@ -261,7 +262,22 @@ class DLRMCustom:
             print("Interrupted")
             return scores
 
+        # Save the model after training
+        self.save_model("results/model/dlrm_model.pt")
+
         return scores
+
+    def save_model(self, path):
+        """
+        Saves the model's state dictionary to the specified path.
+        :param path: The path where the model's state dictionary will be saved.
+        """
+        # Create the directory if it doesn't exist
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        
+        # Save the model's state dictionary
+        torch.save(self.train_model.state_dict(), path)
+        print(f"Model saved to {path}")
 
 
 def plot_results(results):

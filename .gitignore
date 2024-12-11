@@ -2,3 +2,4 @@ venv/
 data/
 categories/
 __pycache__/
+results/
