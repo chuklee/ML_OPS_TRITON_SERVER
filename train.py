@@ -9,10 +9,12 @@ from sklearn.model_selection import train_test_split, StratifiedKFold
 import torch
 from batch import RecBatch
 from model import DLRMCustom
-from utils import plot_results
+from utils import plot_results, plot_feature_engineering
+import plotly.graph_objects as go
 
 # --- Constants ---
 DATA_PATH = "data/ml-1m"
+RESULTS_PATH = "results/figures"
 COLS_DENSE = ["Age"]
 COLS_SPARSE = ["UserID", "MovieID", "Gender", "Occupation", "Zip-code", "Genres"]
 EMBEDDING_DIM = 256
@@ -24,10 +26,11 @@ LEARNING_RATE = 0.01
 N_EPOCHS = 100
 E_PATIENCE = 100
 BATCH_SIZE = 500
-NUM_GENERATED_BATCHES_TRAIN = 100
-NUM_GENERATED_BATCHES_VAL = 10
+NUM_GENERATED_BATCHES_TRAIN = None
+NUM_GENERATED_BATCHES_VAL = None
 SEED = 123
 N_SPLITS = 3
+DATA_PERCENTAGE = 1
 
 # --- Device ---
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -87,6 +90,12 @@ def preprocess_data(movies_df: pd.DataFrame, users_df: pd.DataFrame, ratings_df:
     train_df["label"] = (train_df["Rating"] >= 4).astype(int)
     train_df, test_df = train_test_split(train_df, test_size=0.2, random_state=SEED, stratify=train_df["label"])
     test_df, val_df = train_test_split(test_df, test_size=0.5, random_state=SEED, stratify=test_df["label"])
+
+    # Reduce data based on DATA_PERCENTAGE
+    train_df = train_df.sample(frac=DATA_PERCENTAGE, random_state=SEED)
+    val_df = val_df.sample(frac=DATA_PERCENTAGE, random_state=SEED)
+    test_df = test_df.sample(frac=DATA_PERCENTAGE, random_state=SEED)
+
     return train_df, val_df, test_df
 
 def encode_sparse_features(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd.DataFrame, cols_sparse: list[str]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict, dict]:
@@ -215,7 +224,51 @@ def validate_data(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd.Data
         assert max_test < num_embeddings, f"Test max index {max_test} >= num_embeddings {num_embeddings} for feature {feat}"
         assert max_val < num_embeddings, f"Val max index {max_val} >= num_embeddings {num_embeddings} for feature {feat}"
 
-def train_and_evaluate(train_data: RecBatch, test_data: RecBatch, num_embeddings_per_feature: dict, device: torch.device) -> pd.DataFrame:
+def plot_feature_importance(model, map_sparse, results_path):
+    """
+    Plots the feature importances based on the magnitude of embedding weights.
+
+    Args:
+        model: The trained DLRM model.
+        map_sparse: The mapping dictionary for sparse features.
+        results_path: The path to save the feature importance plot.
+    """
+    # Extract embedding weights from the model
+    embedding_weights = {}
+
+    # Access embedding bag configs
+    eb_configs = model.train_model.model.sparse_arch.embedding_bag_collection._embedding_bag_configs
+
+    # Iterate through embedding bags and their corresponding configs
+    for config, table in zip(eb_configs, model.train_model.model.sparse_arch.embedding_bag_collection.embedding_bags.values()):
+        embedding_weights[config.name] = table.weight.data.cpu().numpy()
+
+    # Calculate feature importances as the average magnitude of embedding vectors
+    feature_importances = {}
+    for feature_name, table_name in map_sparse.items():
+        feature_importances[feature_name] = np.mean(
+            np.abs(embedding_weights[f"t_{feature_name}"])
+        )
+
+    # Create a bar chart of feature importances
+    fig = go.Figure(
+        data=[
+            go.Bar(
+                x=list(feature_importances.keys()),
+                y=list(feature_importances.values()),
+            )
+        ]
+    )
+    fig.update_layout(title_text="Feature Importances", xaxis_title="Feature", yaxis_title="Importance")
+    fig.write_image(os.path.join(results_path, "feature_importance.png"))
+
+def train_and_evaluate(
+    train_data: RecBatch,
+    test_data: RecBatch,
+    num_embeddings_per_feature: dict,
+    map_sparse: dict,
+    device: torch.device,
+) -> pd.DataFrame:
     """
     Trains and evaluates the DLRM model.
 
@@ -223,24 +276,32 @@ def train_and_evaluate(train_data: RecBatch, test_data: RecBatch, num_embeddings
         train_data: The training data batch.
         test_data: The test data batch.
         num_embeddings_per_feature: The number of embeddings per feature.
+        map_sparse: The mapping dictionary for sparse features.
         device: The device to use.
 
     Returns:
         results: The training and evaluation results.
     """
     model_dlrm = DLRMCustom(
-        COLS_DENSE, COLS_SPARSE,
-        EMBEDDING_DIM, num_embeddings_per_feature,
-        DENSE_ARCH_LAYER_SIZES, OVER_ARCH_LAYER_SIZES,
-        ADAGRAD, LEARNING_RATE, EPS,
-        device
+        COLS_DENSE,
+        COLS_SPARSE,
+        EMBEDDING_DIM,
+        num_embeddings_per_feature,
+        DENSE_ARCH_LAYER_SIZES,
+        OVER_ARCH_LAYER_SIZES,
+        ADAGRAD,
+        LEARNING_RATE,
+        EPS,
+        device,
     )
-    scores = model_dlrm.train_test(train_data, test_data, N_EPOCHS, E_PATIENCE, nb_batches=None)
-    for epoch_data in scores.values():
-        epoch_data['losses_test'] = epoch_data['loss_test']
-        del epoch_data['loss_test']
-    results = pd.DataFrame(scores).T.reset_index().rename(columns={'index': 'epoch'})
-    plot_results(results)
+
+    scores = model_dlrm.train_test(train_data, test_data, N_EPOCHS, E_PATIENCE)
+    results = pd.DataFrame(scores).T.reset_index().rename(columns={"index": "epoch"})
+
+    # --- Plot feature importance ---
+    plot_feature_importance(model_dlrm, map_sparse, RESULTS_PATH)
+
+    plot_results(results, RESULTS_PATH)
     return results
 
 def cross_validate(train_df: pd.DataFrame, num_embeddings_per_feature: dict, device: torch.device) -> pd.DataFrame:
@@ -253,10 +314,10 @@ def cross_validate(train_df: pd.DataFrame, num_embeddings_per_feature: dict, dev
         device: The device to use.
 
     Returns:
-        test_aucs: The cross-validation results.
+        cv_results: The cross-validation results.
     """
     kfolds = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=SEED)
-    test_aucs = {}
+    cv_results = []
 
     for i, (train_index, test_index) in enumerate(kfolds.split(train_df, train_df.label)):
         print("---" * 10)
@@ -264,6 +325,10 @@ def cross_validate(train_df: pd.DataFrame, num_embeddings_per_feature: dict, dev
 
         train_df_kf = train_df.iloc[train_index].reset_index(drop=True)
         test_df_kf = train_df.iloc[test_index].reset_index(drop=True)
+
+        # Reduce data based on DATA_PERCENTAGE
+        train_df_kf = train_df_kf.sample(frac=DATA_PERCENTAGE, random_state=SEED)
+        test_df_kf = test_df_kf.sample(frac=DATA_PERCENTAGE, random_state=SEED)
 
         print('   Generate train data ...')
         train_data = RecBatch(
@@ -303,14 +368,14 @@ def cross_validate(train_df: pd.DataFrame, num_embeddings_per_feature: dict, dev
         print('   Scores:')
         print(scores.iloc[-5:])
 
-        labels, preds, losses_test, auc_test = model_dlrm.evaluate(test_data)
-        print("   Test AUC:", round(auc_test, 4))
+        # Store all metrics for each fold
+        fold_results = scores.copy()
+        fold_results['fold'] = i + 1
+        cv_results.append(fold_results)
 
-        test_aucs[i] = auc_test
-
-    test_aucs = pd.DataFrame.from_dict(test_aucs, orient='index').\
-                  reset_index().\
-                  rename(columns={'index': 'epoch', 0: 'val_auc'})
+    # Concatenate results from all folds
+    cv_results = pd.concat(cv_results, axis=0).reset_index(drop=True)
+    return cv_results
     return test_aucs
 
 def main():
@@ -334,14 +399,24 @@ def main():
     num_embeddings_per_feature = {c + '_enc': len(v) + 1 for c, v in map_sparse.items()}
     validate_data(train_df, val_df, test_df, COLS_SPARSE, num_embeddings_per_feature)
 
+    # --- Feature engineering plots ---
+    os.makedirs(RESULTS_PATH, exist_ok=True)
+    plot_feature_engineering(train_df, RESULTS_PATH)
+
     # --- Train and evaluate ---
     print("Training and evaluating the model...")
-    train_and_evaluate(train_data, test_data, num_embeddings_per_feature, DEVICE)
+    results = train_and_evaluate(train_data, test_data, num_embeddings_per_feature, map_sparse, DEVICE)
+
+    # --- Plot results ---
+    plot_results(results, RESULTS_PATH)
 
     # --- Cross-validate ---
     print("Performing cross-validation...")
     train_df = pd.concat([train_df, test_df], axis=0).reset_index(drop=True)
-    cross_validate(train_df, num_embeddings_per_feature, DEVICE)
+    cv_results = cross_validate(train_df, num_embeddings_per_feature, DEVICE)
+
+    # --- Plot cross-validation results ---
+    plot_results(cv_results, RESULTS_PATH, cross_validation=True)
 
 if __name__ == "__main__":
     main()
