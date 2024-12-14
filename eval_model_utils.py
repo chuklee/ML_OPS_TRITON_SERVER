@@ -433,4 +433,6 @@ def evaluation(userCount, itemCount, device, df_train,df_test, df_combined):
     title_emb_tensor = torch.stack(list_titlEmb)
     test_user_id = 10  # You can change this to any user ID in your dataset
     detailed_user_recommendations(test_user_id, modelRec, df_combined, device, df_train,df_test, title_to_idx, title_emb_tensor)
-    analyze_multiple_users(150, 42, df_test, modelRec, device, df_combined, title_to_idx,title_emb_tensor)
+    user_stats = analyze_multiple_users(150, 42, df_test, modelRec, device, df_combined, title_to_idx,title_emb_tensor)
+    print(user_stats)
+    return user_stats
