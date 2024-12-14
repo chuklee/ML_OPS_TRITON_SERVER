@@ -3,12 +3,98 @@ import subprocess
 import wget
 import pandas as pd
 import numpy as np
+from sklearn.model_selection import train_test_split
 
 from sklearn.preprocessing import StandardScaler
+from torch.utils.data import Dataset
+import torch
+from sentence_transformers import SentenceTransformer
+import torch.nn as nn
+from torch.nn import functional as F
+
 
 NEGATIVE_SAMPLES_PER_USER = 80
 
+import torch
+from torch.utils.data import Dataset
 
+class cls_dataset(Dataset):
+    def __init__(self, data, user_count, item_count, title_emb_tensor, title_to_idx):
+        super().__init__()
+        self.m_data = data.reset_index(drop=True)
+        self.user_count = user_count
+        self.item_count = item_count
+        self.title_emb_tensor = title_emb_tensor  # Keep on CPU
+        self.title_to_idx = title_to_idx
+
+    def __len__(self):
+        """Return the total number of samples in the dataset."""
+        return len(self.m_data)
+
+    def __getitem__(self, index):
+        """Retrieve a single sample from the dataset."""
+        user_id = self.m_data.at[index, "user_id"]
+        item_id = self.m_data.at[index, "item_id"]
+
+        # User features
+        user_features = torch.tensor(
+            self.m_data.iloc[index][["user_id", "age", "occupation"]].values.astype(np.float32),
+            dtype=torch.float32
+        )
+        user_features = torch.cat((
+            user_features,
+            torch.tensor(
+                [self.m_data.at[index, "gen_F"], self.m_data.at[index, "gen_M"]],
+                dtype=torch.float32
+            )
+        ))
+
+        # Item features
+        item_features = torch.tensor(
+            self.m_data.iloc[index][[
+                "item_id", "timestamp", "unknown", "Action", "Adventure", "Animation", "Children",
+                "Comedy", "Crime", "Documentary", "Drama", "Fantasy", "Film_Noir", "Horror",
+                "Musical", "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western"
+            ]].values.astype(np.float32),
+            dtype=torch.float32
+        )
+
+        # Title embedding
+        title = self.m_data.at[index, "title"]
+        title_idx = self.title_to_idx.get(title, -1)
+        if title_idx != -1:
+            ts_title = self.title_emb_tensor[title_idx]
+        else:
+            ts_title = torch.zeros(384)  # Keep on CPU
+
+        # Concatenate item features with title embeddings
+        concatenated = torch.cat((item_features, ts_title), dim=0)
+
+        return (
+            user_features,
+            concatenated,
+            torch.tensor(int(self.m_data.at[index, "like"]), dtype=torch.long),
+            torch.tensor(float(self.m_data.at[index, "rating"]), dtype=torch.float32)
+        )
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        BCE_loss = F.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-BCE_loss)
+        F_loss = self.alpha * (1-pt)**self.gamma * BCE_loss
+
+        if self.reduction == 'mean':
+            return torch.mean(F_loss)
+        elif self.reduction == 'sum':
+            return torch.sum(F_loss)
+        else:
+            return F_loss
 def download_and_extract_dataset():
     """
     Download and extract the MovieLens dataset 1m
@@ -199,3 +285,123 @@ def generate_negative_samples(df_source, user_ids, all_item_ids, user_positive_i
                 df_neg[col] = df_neg[col].fillna(False)
 
     return df_neg
+def debug_shapes(model, x1, x2):
+    """Debug function to print model shapes"""
+    print("Input shapes:")
+    print(f"x1: {x1.shape}")
+    print(f"x2: {x2.shape}")
+    
+    # Forward pass through user model
+    user_emb = model.m_modelUser(x1)
+    print(f"User embedding: {user_emb.shape}")
+    
+    # Forward pass through item model
+    item_emb = model.m_modelItem(x2)
+    print(f"Item embedding: {item_emb.shape}")
+    
+    # Concatenate embeddings
+    combined = torch.cat([user_emb, item_emb], dim=1)
+    print(f"Combined embedding: {combined.shape}")
+    
+    # Final classification
+    output = model.m_modelClassify(combined)
+    print(f"Final output: {output.shape}")
+
+def prepare_data(df_combined, df_movies, df_users):
+    """
+    Prepare train and test datasets with negative sampling
+    """
+    df_train, df_test = train_test_split(df_combined, train_size=0.8, random_state=42, shuffle=True)
+
+
+    # Step 2: Create user-item interaction dictionary
+    user_positive_items = df_combined.groupby('user_id')['item_id'].apply(set).to_dict()
+
+    # Step 3: Get all unique item IDs
+    all_item_ids = df_combined['item_id'].unique()
+    # Verify that all item_ids exist in df_movies
+    missing_item_ids = set(all_item_ids) - set(df_movies['item_id'])
+    if missing_item_ids:
+        # Optionally, remove these item_ids from all_item_ids to prevent sampling them
+        all_item_ids = np.array(list(set(all_item_ids) - missing_item_ids))
+
+    # Step 4: Generate negative samples for training and testing
+    df_neg_train = generate_negative_samples(
+        df_source=df_combined,
+        user_ids=df_train['user_id'].unique(),
+        all_item_ids=all_item_ids,
+        user_positive_items=user_positive_items,
+        df_movies=df_movies,
+        df_users=df_users,
+        sample_size=NEGATIVE_SAMPLES_PER_USER
+    )
+
+    df_neg_test = generate_negative_samples(
+        df_source=df_combined,
+        user_ids=df_test['user_id'].unique(),
+        all_item_ids=all_item_ids,
+        user_positive_items=user_positive_items,
+        df_movies=df_movies,
+        df_users=df_users,
+        sample_size=NEGATIVE_SAMPLES_PER_USER
+    )
+
+
+    df_neg_train['like'] = 0
+    df_neg_test['like'] = 0
+
+    df_train = pd.concat([df_train, df_neg_train], axis=0).reset_index(drop=True)
+
+    df_test = pd.concat([df_test, df_neg_test], axis=0).reset_index(drop=True)
+
+    # Apply title preprocessing to df_train and df_test after combining
+    df_train["title"] = df_train["title"].apply(preprocess_title)
+    df_test["title"] = df_test["title"].apply(preprocess_title)
+
+
+    unique_item_ids = df_combined['item_id'].unique()
+    item_id_mapping = {original_id: new_id for new_id, original_id in enumerate(unique_item_ids)}
+
+    # Apply mapping to all DataFrames
+    for df_name, df in zip(['df_combined', 'df_train', 'df_test'], [df_combined, df_train, df_test]):
+        df['item_id'] = df['item_id'].map(item_id_mapping)
+
+
+    # Step 8: Drop any rows with missing 'item_id's
+    df_train = df_train.dropna(subset=['item_id']).reset_index(drop=True)
+
+    df_test = df_test.dropna(subset=['item_id']).reset_index(drop=True)
+
+    # Step 9: Convert 'item_id' to integer type
+    for df_name, df in zip(['df_combined', 'df_train', 'df_test'], [df_combined, df_train, df_test]):
+        df['item_id'] = df['item_id'].astype(int)
+
+    # Step 10: Shuffle the final datasets
+    df_train = df_train.sample(frac=1, random_state=42).reset_index(drop=True)
+    df_test = df_test.sample(frac=1, random_state=42).reset_index(drop=True)
+    df_test = df_test.reset_index(drop=True )
+
+    return df_train,df_test
+def encode_title(df_train,df_test):
+    # Initialize the Sentence Transformer model
+    model_strans = SentenceTransformer('all-MiniLM-L6-v2')
+
+    # Initialize the dictionary to store embeddings
+    dict_titlEmb = {}
+
+    # Combine unique titles from both training and testing sets
+    all_unique_titles = pd.concat([df_train, df_test])["title"].unique()
+
+    # Encode each unique title and store it in the dictionary
+    for title in all_unique_titles:
+        dict_titlEmb[title] = torch.tensor(model_strans.encode(title))
+
+    # Verify that all titles are embedded
+    combined_unique_titles = set(df_train['title'].unique()).union(set(df_test['title'].unique()))
+    missing_titles = combined_unique_titles - set(dict_titlEmb.keys())
+
+    if missing_titles:
+        # Optionally, handle missing titles
+        for title in missing_titles:
+            dict_titlEmb[title] = torch.tensor(model_strans.encode(title))
+    return dict_titlEmb
