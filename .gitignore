@@ -3,3 +3,7 @@ data/
 categories/
 __pycache__/
 results/
+data/
+runs/
+models/
+*.zip
