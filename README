@@ -1,5 +1,76 @@
-## Tutorial
-(Nvidia)[https://nvidia-merlin.github.io/Merlin/stable/examples/getting-started-movielens/index.html]
+# Movie Recommendation System
 
-## TODO
-(Triton server)[https://nvidia-merlin.github.io/Merlin/stable/examples/Building-and-deploying-multi-stage-RecSys/index.html]
+This project is a movie recommendation system built using PyTorch, FastAPI, and Redis. It leverages a collaborative filtering model to provide personalized movie recommendations to users based on their past interactions and features.
+
+## Project Structure
+
+- **models.py**: Contains the definition of the recommendation model (`cls_model`).
+- **model_serving.py**: Handles model loading, user embedding generation, and recommendation retrieval.
+- **online_serving.py**: Implements the FastAPI server to provide endpoints for recommendations and user management.
+- **data_pipeline.py**: Manages data loading, preprocessing, and feature extraction.
+- **utils.py**: Contains utility functions for data processing, negative sampling, and more.
+- **train.py**: Script to train the recommendation model.
+- **README.md**: This file.
+
+## How It Works
+
+1. **Data Preparation**: The system uses the MovieLens dataset. The data is preprocessed to include user and item features, and negative samples are generated for training.
+
+2. **Model Training**: The model is trained using a combination of user and item embeddings, along with additional features. The training process includes logging to TensorBoard for monitoring.
+
+3. **Model Serving**: The trained model is loaded and served using FastAPI. User embeddings are cached in Redis for efficient retrieval.
+
+4. **Recommendation Retrieval**: For a given user, the system retrieves their embedding, computes similarities with item embeddings using FAISS, and returns the top-k recommendations.
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.8 or higher
+- CUDA-compatible GPU (optional, for faster training and inference)
+- Redis server running locally
+
+### Installation
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/yourusername/movierec-system.git
+   cd movierec-system
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Download and preprocess the dataset**:
+   The dataset will be automatically downloaded and preprocessed when you run the training script.
+
+### Training the Model
+
+To train the model, run the following command:
+```bash
+python train.py
+```
+This will download the dataset (if not already present), preprocess it, and train the model. The trained model will be saved as `modelRec.pth`.
+
+### Starting the API Server
+
+To start the FastAPI server, run:
+```bash
+python online_serving.py
+```
+
+This will start the FastAPI server, and you can access the API endpoints at `http://localhost:8000`.
+
+### Making Requests
+
+- **Get Recommendations**: Use the `/recommendations/{user_id}` endpoint to get movie recommendations for a user.
+- **Create New User**: Use the `/users/new` endpoint to add a new user to the system.
+
+### Monitoring
+
+- **TensorBoard**: During training, logs are saved to `runs/recommendation_experiment`. You can monitor the training process using TensorBoard:
+  ```bash
+  tensorboard --logdir=runs
+  ```
