@@ -74,3 +74,9 @@ class ModelServer:
         """Get top-k recommendations using FAISS"""
         distances, indices = self.index.search(user_embedding, k)
         return indices[0].tolist()  # Return just the indices
+    
+    def get_next_user_id(self) -> int:
+        """Generate next available user ID"""
+        key = "next_user_id"
+        next_id = self.redis_client.incr(key)
+        return next_id

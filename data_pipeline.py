@@ -33,3 +33,33 @@ class DataPipeline:
         """Get all features for a specific user"""
         user_data = self.df_users[self.df_users['user_id'] == user_id].iloc[0]
         return user_data.to_dict()
+    
+    def get_similar_demographic_users(self, features: Dict) -> List[int]:
+        """Find users with similar demographic features"""
+        similar_users = self.df_users[
+            (self.df_users['age'].between(features['age'] - 5, features['age'] + 5)) &
+            (self.df_users['occupation'] == features['occupation'])
+        ]['user_id'].tolist()
+        return similar_users
+
+    def get_popular_items_for_demographic(self, similar_users: List[int], n: int = 20) -> List[Dict]:
+        """Get popular items among similar users"""
+        popular_items = (
+            self.df_ratings[self.df_ratings['user_id'].isin(similar_users)]
+            .groupby('item_id')
+            .agg({'rating': ['count', 'mean']})
+            .sort_values(by=[('rating', 'count'), ('rating', 'mean')], ascending=False)
+            .head(n)
+        ).index.tolist()
+        
+        return [self.get_item_features(item_id) for item_id in popular_items]
+
+    def store_new_user(self, user_id: int, features: Dict):
+        """Store new user data"""
+        new_user = pd.DataFrame([{
+            'user_id': user_id,
+            'age': features['age'],
+            'occupation': features['occupation'],
+            'gender': 'F' if features['gen_F'] == 1 else 'M'
+        }])
+        self.df_users = pd.concat([self.df_users, new_user], ignore_index=True)

@@ -82,12 +82,21 @@ async def create_new_user(user_features: UserFeatures):
             'gen_M': gen_M
         }
         
-        # Generate initial embedding for the user
-        # You might want to implement a better initialization strategy
-        user_id = model_server.get_next_user_id()  # You'll need to implement this
-        user_embedding = model_server.get_user_embedding(user_id, features)
+        # Generate new user ID
+        user_id = model_server.get_next_user_id()
         
-        return {"user_id": user_id, "status": "success"}
+        # Get initial recommendations based on demographics
+        similar_users = data_pipeline.get_similar_demographic_users(features)
+        popular_items = data_pipeline.get_popular_items_for_demographic(similar_users)
+        
+        # Store user data
+        data_pipeline.store_new_user(user_id, features)
+        
+        return {
+            "user_id": user_id,
+            "initial_recommendations": popular_items,
+            "status": "success"
+        }
     
     except Exception as e:
         print(e)
