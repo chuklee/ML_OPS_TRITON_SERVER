@@ -3,16 +3,20 @@ import subprocess
 import wget
 import pandas as pd
 import numpy as np
+import mlflow
+import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-
+import seaborn as sns
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset
 import torch
 from sentence_transformers import SentenceTransformer
 import torch.nn as nn
 from torch.nn import functional as F
-
-
+import multiprocessing
+from torch.utils.data import DataLoader
+import shutil
+from models import cls_model
 NEGATIVE_SAMPLES_PER_USER = 80
 
 import torch
@@ -383,6 +387,7 @@ def prepare_data(df_combined, df_movies, df_users):
 
     return df_train,df_test
 def encode_title(df_train,df_test):
+    """Encode the titles"""
     # Initialize the Sentence Transformer model
     model_strans = SentenceTransformer('all-MiniLM-L6-v2')
 
@@ -405,3 +410,162 @@ def encode_title(df_train,df_test):
         for title in missing_titles:
             dict_titlEmb[title] = torch.tensor(model_strans.encode(title))
     return dict_titlEmb
+def create_datasets(df_train, df_test, userCount, itemCount):
+    """
+    Create the datasets and dataloaders for training
+    """
+    # Preparation of title embeddings
+    all_unique_titles = pd.concat([df_train, df_test])["title"].unique()
+    title_to_idx = {title: idx for idx, title in enumerate(all_unique_titles)}
+    dict_titlEmb = encode_title(df_train, df_test)
+    list_titlEmb = [dict_titlEmb[title] for title in title_to_idx]
+    title_emb_tensor = torch.stack(list_titlEmb)
+
+    # Creation of the datasets
+    ds_train = cls_dataset(df_train, userCount, itemCount, title_emb_tensor, title_to_idx)
+    ds_test = cls_dataset(df_test, userCount, itemCount, title_emb_tensor, title_to_idx)
+
+    # Configuration of the DataLoaders
+    num_workers = multiprocessing.cpu_count()
+    ds_trainLoader = DataLoader(ds_train, batch_size=512, num_workers=num_workers, pin_memory=True)
+    ds_testLoader = DataLoader(ds_test, batch_size=1000, num_workers=num_workers, pin_memory=True)
+
+    return ds_train, ds_testLoader, title_to_idx, title_emb_tensor
+
+def create_and_log_plots(history, epoch):
+    """Creation and logging of plots"""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+    
+    # Loss plot
+    ax1.plot(history['train_loss'], label='Train Loss')
+    ax1.plot(history['val_loss'], label='Val Loss')
+    ax1.set_title('Training and Validation Loss')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.legend()
+    
+    # Accuracy plot
+    ax2.plot(history['val_accuracy'], label='Validation Accuracy')
+    ax2.set_title('Validation Accuracy')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Accuracy')
+    ax2.legend()
+    
+    plt.tight_layout()
+    
+    # Save and log the plots
+    plot_path = f"training_metrics_epoch_{epoch}.png"
+    plt.savefig(plot_path)
+    mlflow.log_artifact(plot_path)
+    plt.close()
+    os.remove(plot_path)
+
+def create_comparison_visualizations(results):
+    """Creation and logging of comparison visualizations"""
+    results_df = pd.DataFrame(results)
+    
+    with mlflow.start_run(run_name="hyperparameter_comparison"):
+        # Heatmap
+        plt.figure(figsize=(12, 8))
+        pivot_table = results_df.pivot_table(
+            values='final_val_accuracy',
+            index='learning_rate',
+            columns='batch_size'
+        )
+        sns.heatmap(pivot_table, annot=True, cmap='YlOrRd')
+        plt.title('Validation Accuracy by Learning Rate and Batch Size')
+        
+        # Save and log the heatmap
+        heatmap_path = "heatmap_comparison.png"
+        plt.savefig(heatmap_path)
+        mlflow.log_artifact(heatmap_path)
+        plt.close()
+        os.remove(heatmap_path)
+        
+        # Box plots
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+        sns.boxplot(data=results_df, x='learning_rate', y='final_val_accuracy', ax=ax1)
+        ax1.set_title('Accuracy by Learning Rate')
+        sns.boxplot(data=results_df, x='batch_size', y='final_val_accuracy', ax=ax2)
+        ax2.set_title('Accuracy by Batch Size')
+        plt.tight_layout()
+        
+        # Save and log the boxplots
+        boxplots_path = "boxplots_comparison.png"
+        plt.savefig(boxplots_path)
+        mlflow.log_artifact(boxplots_path)
+        plt.close()
+        os.remove(boxplots_path)
+
+def save_production_model(model, model_name, metadata):
+    """Save the production model"""
+    try:
+        # Create a new experiment if it doesn't exist
+        mlflow.set_experiment("recommendation_experiment")
+        
+        with mlflow.start_run(run_name=f"production_model_{model_name}") as run:
+            # Save the model
+            model_path = f"{model_name}.pth"
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'metadata': metadata
+            }, model_path)
+            
+            # Log in MLflow
+            mlflow.log_artifact(model_path)
+            mlflow.log_params(metadata)
+            
+            print(f"\nModel saved in MLflow:")
+            print(f"Run ID: {run.info.run_id}")
+            print(f"Experiment ID: {run.info.experiment_id}")
+            
+            os.remove(model_path)
+            return run.info.experiment_id  # Return the experiment ID
+            
+    except Exception as e:
+        print(f"Error saving model: {e}")
+        return None
+
+def load_production_model(model_name, userCount, itemCount, experiment_id):
+    """Load the production model"""
+    try:
+        client = mlflow.tracking.MlflowClient()
+        temp_dir = "temp_models"
+        
+        # Create the temporary directory if it doesn't exist
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Use the experiment_id passed as a parameter
+        runs = client.search_runs(
+            experiment_ids=[experiment_id],
+            filter_string="attributes.status = 'FINISHED'",
+            order_by=["attributes.start_time DESC"]
+        )
+        
+        if not runs:
+            raise Exception("No runs found")
+            
+        latest_run = runs[0]
+        model_path = client.download_artifacts(
+            latest_run.info.run_id,
+            f"{model_name}.pth",
+            temp_dir
+        )
+        
+        checkpoint = torch.load(model_path)
+        model = cls_model(userCount, itemCount)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Clean up the temporary directory
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+            
+        print("Model loaded successfully!")
+        return model
+        
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        # Clean up in case of error
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+        return None

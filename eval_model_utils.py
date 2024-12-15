@@ -182,10 +182,6 @@ def detailed_user_recommendations(user_id, modelRec, df_combined, device, df_tra
             if predicted_like == 1:  # Model predicted "like"
                 liked_correct += 1
                 
-            print(f"Movie: {movie['title']}")
-            print(f"Actual Rating: {movie['rating']:.1f}")
-            print(f"Predicted: {'Like' if predicted_like == 1 else 'Dislike'}")
-            print(f"Prediction {'Correct' if predicted_like == 1 else 'Incorrect'}\n")
 
     # Predict likes for disliked movies (test set only)
     print("\nPredictions for Movies User Disliked in Test Set (Rating < 4):")
@@ -220,10 +216,6 @@ def detailed_user_recommendations(user_id, modelRec, df_combined, device, df_tra
             if predicted_like == 0:  # Model predicted "dislike"
                 disliked_correct += 1
                 
-            print(f"Movie: {movie['title']}")
-            print(f"Actual Rating: {movie['rating']:.1f}")
-            print(f"Predicted: {'Like' if predicted_like == 1 else 'Dislike'}")
-            print(f"Prediction {'Correct' if predicted_like == 0 else 'Incorrect'}\n")
 
     # Calculate and display statistics (test set only)
     print("\n=== Prediction Statistics (Test Set Only) ===")

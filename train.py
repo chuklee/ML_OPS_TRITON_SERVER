@@ -37,7 +37,8 @@ from sqlalchemy.exc import MovedIn20Warning
 from datetime import datetime
 from utils import (cls_dataset, FocalLoss, debug_shapes, 
                   read_dataset, preprocess_dataset, prepare_data,
-                  download_and_extract_dataset, encode_title, generate_negative_samples)
+                  download_and_extract_dataset, encode_title, 
+                  create_and_log_plots, save_production_model, load_production_model)
 from eval_model_utils import evaluation, detailed_user_recommendations, analyze_multiple_users
 import warnings
 warnings.filterwarnings('ignore', category=MovedIn20Warning)
@@ -61,9 +62,9 @@ def train_model(df_train, df_test, userCount, itemCount, device):
         mlflow.log_params({
             "userCount": userCount,
             "itemCount": itemCount,
-            "epochs": 5,
+            "epochs": 2,
             "batch_size": 512,
-            "learning_rate": 1e-3,
+            "learning_rate": 1e-4,
             "user_embSize": 32,
             "item_embSize": 32,
             "model_architecture": "cls_model"
@@ -95,18 +96,24 @@ def train_model(df_train, df_test, userCount, itemCount, device):
 
         # Training setup
         criterion = FocalLoss(alpha=1, gamma=2, reduction='mean').to(device)
-        optim = torch.optim.Adam(modelRec.parameters(), lr=1e-3)
+        optim = torch.optim.Adam(modelRec.parameters(), lr=1e-4)
         scaler = torch.GradScaler()
+
+        history = {'train_loss': [], 'val_loss': [], 'val_accuracy': []}
 
         # Training loop
         best_val_accuracy = 0.0
         best_model_state = None
-        for epoch in range(5):
+        for epoch in range(2):
             # Training
             train_loss = train_epoch(modelRec, ds_trainLoader, criterion, optim, scaler, device)
             
             # Validation
             val_loss, val_accuracy = validate_epoch(modelRec, ds_testLoader, criterion, device)
+
+            history['train_loss'].append(train_loss)
+            history['val_loss'].append(val_loss)
+            history['val_accuracy'].append(val_accuracy)
 
             # Log metrics
             mlflow.log_metrics({
@@ -114,6 +121,8 @@ def train_model(df_train, df_test, userCount, itemCount, device):
                 "val_loss": val_loss,
                 "val_accuracy": val_accuracy
             }, step=epoch)
+
+            create_and_log_plots(history, epoch)
 
             # TensorBoard logging
             writer.add_scalar('Train/Loss', train_loss, epoch)
@@ -140,16 +149,39 @@ def train_model(df_train, df_test, userCount, itemCount, device):
                 mlflow.log_artifact(model_path)
 
                 # Log model architecture
-         # Save final model with MLflow
+        # Save final model with MLflow
+        final_metrics = {
+            'final_val_accuracy': float(history['val_accuracy'][-1]),
+            'final_train_loss': float(history['train_loss'][-1]),
+            'best_val_accuracy': float(best_val_accuracy)
+        }
+        mlflow.log_metrics(final_metrics)
+        
+        # Log of the model metadata
+        metadata = {
+            'training_date': datetime.now().strftime("%Y-%m-%d"),
+            'model_version': '1.0',
+            'framework_versions': {
+                'pytorch': str(torch.__version__),
+                'numpy': str(np.__version__)
+            }
+        }
 
+        for key, value in metadata.items():
+            if isinstance(value, dict):
+                for sub_key, sub_value in value.items():
+                    mlflow.log_param(f"{key}.{sub_key}", str(sub_value))
+            else:
+                mlflow.log_param(key, value)
         torch.save(modelRec.state_dict(), "final_model.pth")
         writer.close()
 
         if best_model_state is not None:
             modelRec.load_state_dict(best_model_state)
         return modelRec
-
+    
 def train_epoch(model, train_loader, criterion, optimizer, scaler, device):
+    """Training epoch"""
     model.train()
     total_loss = 0
     for x1, x2, y, _ in tqdm(train_loader, desc="Training"):
@@ -169,6 +201,7 @@ def train_epoch(model, train_loader, criterion, optimizer, scaler, device):
     return total_loss / len(train_loader)
 
 def validate_epoch(model, val_loader, criterion, device):
+    """Validation epoch"""
     model.eval()
     total_loss = 0
     all_preds = []
@@ -192,10 +225,6 @@ def validate_epoch(model, val_loader, criterion, device):
     
     return val_loss, val_accuracy
 
-def save_production_model(model, model_name, metadata):
-    mlflow.pytorch.log_model(model,"models", model_name, metadata=metadata)
-def load_production_model(model_name):
-    return mlflow.pytorch.load_model(f"models/{model_name}", stage="Production")
 
 def setup_mlflow():
     """Configure MLflow tracking"""
@@ -267,34 +296,36 @@ if __name__ == "__main__":
     user_stats = analyze_multiple_users(100, 42, df_test, model, device, df_combined, title_to_idx,title_emb_tensor)
 
     mean_accuracy = np.mean([stat['overall_accuracy'] for stat in user_stats])
-    if mean_accuracy > 85:  # Seuil de performance
+    if mean_accuracy > 85:
         metadata = {
-            'mean_accuracy': mean_accuracy,
+            'mean_accuracy': str(mean_accuracy),
             'training_date': datetime.now().strftime("%Y-%m-%d"),
-            'model_version': '1.0',
-            'framework_versions': {
-                'pytorch': torch.__version__,
-                'numpy': np.__version__
-            }
+            'model_version': '1.0'
         }
-        save_production_model(model, "modelRec", metadata)
-
-        try:
-            prod_model = load_production_model("movie_recommender")
-            print("Modèle de production chargé avec succès")
-        except:
-            print("Aucun modèle en production trouvé, utilisation du modèle actuel")
-            prod_model = model
         
-        # Utiliser le modèle pour les prédictions
-        detailed_user_recommendations(
-            user_id=10,
-            modelRec=prod_model,
-            df_combined=df_combined,
-            device=device,
-            df_train=df_train,
-            df_test=df_test,
-            title_to_idx=title_to_idx,
-            title_emb_tensor=title_emb_tensor
-        )
+        # Sauvegarder et récupérer l'experiment_id
+        experiment_id = save_production_model(model, "modelRec", metadata)
+        
+        if experiment_id:
+            # Utiliser l'experiment_id pour charger le modèle
+            prod_model = load_production_model("modelRec", userCount, itemCount, experiment_id)
+            
+            if prod_model is None:
+                print("Using current model as production model")
+                prod_model = model
+            else:
+                print("Production model loaded successfully")
+                
+            prod_model = prod_model.to(device)
+            
+            detailed_user_recommendations(
+                user_id=10,
+                modelRec=prod_model,
+                df_combined=df_combined,
+                device=device,
+                df_train=df_train,
+                df_test=df_test,
+                title_to_idx=title_to_idx,
+                title_emb_tensor=title_emb_tensor
+            )
 

@@ -5,28 +5,28 @@ import yaml
 from datetime import datetime
 
 def init_mlflow():
-    # Nettoyer l'environnement existant
+    # Clean the existing environment
     if os.path.exists("mlruns"):
         shutil.rmtree("mlruns")
     
-    # Créer le répertoire mlruns
+    # Create the mlruns directory
     os.makedirs("mlruns", exist_ok=True)
     
-    # Configurer MLflow
+    # Configure MLflow
     tracking_uri = "file:./mlruns"
     mlflow.set_tracking_uri(tracking_uri)
     
-    # Créer l'expérience
+    # Create the experiment
     experiment_name = "recommendation_experiment"
     
-    # Définir l'ID explicitement
-    experiment_id = "1"  # On utilise "1" car "0" est réservé pour l'expérience par défaut
+    # Set the ID explicitly
+    experiment_id = "1"  # We use "1" because "0" is reserved for the default experiment
     
-    # Créer le répertoire de l'expérience
+    # Create the experiment directory
     exp_dir = os.path.join("mlruns", experiment_id)
     os.makedirs(exp_dir, exist_ok=True)
     
-    # Créer le fichier meta.yaml
+    # Create the meta.yaml file
     meta = {
         "artifact_location": os.path.abspath(exp_dir),
         "experiment_id": experiment_id,
@@ -38,7 +38,7 @@ def init_mlflow():
     with open(os.path.join(exp_dir, "meta.yaml"), "w") as f:
         yaml.dump(meta, f)
     
-    # Créer aussi le fichier meta.yaml dans le répertoire principal
+    # Create also the meta.yaml file in the root directory
     root_meta = {
         "experiments": {
             experiment_id: {
