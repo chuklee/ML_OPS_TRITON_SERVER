@@ -23,109 +23,236 @@ import faiss
 from models import cls_model
 import matplotlib.pyplot as plt
 import seaborn as sns
+import mlflow
+import mlflow.pytorch
+from mlflow.tracking import MlflowClient
+from mlflow.store.db.utils import _upgrade_db
+
+
+import sqlalchemy
+from sqlalchemy import create_engine, text, MetaData, Table, Column, Integer, String, BigInteger, Float
+
+from sqlalchemy.orm import declarative_base
+from sqlalchemy.exc import MovedIn20Warning
+from datetime import datetime
 from utils import (cls_dataset, FocalLoss, debug_shapes, 
                   read_dataset, preprocess_dataset, prepare_data,
-                  download_and_extract_dataset, encode_title, generate_negative_samples)
-from eval_model_utils import evaluation
+                  download_and_extract_dataset, encode_title, 
+                  create_and_log_plots, save_production_model, load_production_model)
+from eval_model_utils import evaluation, detailed_user_recommendations, analyze_multiple_users
+import warnings
+warnings.filterwarnings('ignore', category=MovedIn20Warning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+
+
 def train_model(df_train, df_test, userCount, itemCount, device):
     """
-    Train the recommendation model
+    Train the recommendation model with MLflow tracking
     """
-    # Initialize TensorBoard writer
-    writer = SummaryWriter(log_dir='runs/recommendation_experiment')
+    os.makedirs("mlruns", exist_ok=True)
+    with mlflow.start_run(run_name=f"training_{datetime.now().strftime('%Y%m%d_%H%M%S')}") as run:
+        print(f"\nMLflow tracking URI: {mlflow.get_tracking_uri()}")
+        print(f"MLflow run ID: {run.info.run_id}")
+        print("\nTracking interfaces:")
+        print("- TensorBoard: tensorboard --logdir=runs/recommendation_experiment")
+        print("  Then visit: http://localhost:6006")
+        print("- MLflow UI: mlflow ui")
+        print("  Then visit: http://localhost:5000\n")
+        # Log parameters
+        mlflow.log_params({
+            "userCount": userCount,
+            "itemCount": itemCount,
+            "epochs": 2,
+            "batch_size": 512,
+            "learning_rate": 1e-4,
+            "user_embSize": 32,
+            "item_embSize": 32,
+            "model_architecture": "cls_model"
+        })
 
-    # Device configuration
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device is {device}")
+        # Initialize TensorBoard writer
+        writer = SummaryWriter(log_dir='runs/recommendation_experiment')
 
+        # Model initialization
+        modelRec = cls_model(userCount, itemCount, user_embSize=32, item_embSize=32)
+        if torch.cuda.device_count() > 1:
+            modelRec = nn.DataParallel(modelRec)
+        modelRec = modelRec.to(device)
 
-    epochs = 5
-    all_unique_titles = pd.concat([df_train, df_test])["title"].unique()
+        # Dataset preparation
+        all_unique_titles = pd.concat([df_train, df_test])["title"].unique()
+        title_to_idx = {title: idx for idx, title in enumerate(all_unique_titles)}
+        dict_titlEmb = encode_title(df_train, df_test)
+        list_titlEmb = [dict_titlEmb[title] for title in title_to_idx]
+        title_emb_tensor = torch.stack(list_titlEmb)
 
-    # Title to index mapping
-    title_to_idx = {title: idx for idx, title in enumerate(all_unique_titles)}
-    dict_titlEmb = encode_title(df_train,df_test)
-    list_titlEmb = [dict_titlEmb[title] for title in title_to_idx]
-    title_emb_tensor = torch.stack(list_titlEmb)
+        # Dataset and DataLoader
+        ds_train = cls_dataset(df_train, userCount, itemCount, title_emb_tensor, title_to_idx)
+        ds_test = cls_dataset(df_test, userCount, itemCount, title_emb_tensor, title_to_idx)
 
-    # Dataset and DataLoader
-    ds_train = cls_dataset(df_train, userCount, itemCount, title_emb_tensor, title_to_idx)
-    ds_test = cls_dataset(df_test, userCount, itemCount, title_emb_tensor, title_to_idx)
+        num_workers = multiprocessing.cpu_count()
+        ds_trainLoader = DataLoader(ds_train, batch_size=512, num_workers=num_workers, pin_memory=True)
+        ds_testLoader = DataLoader(ds_test, batch_size=1000, num_workers=num_workers, pin_memory=True)
 
-    num_workers = multiprocessing.cpu_count()
-    ds_trainLoader = DataLoader(ds_train, batch_size=512, num_workers=num_workers, pin_memory=True)
-    ds_testLoader = DataLoader(ds_test, batch_size=1000, num_workers=num_workers, pin_memory=True)
+        # Training setup
+        criterion = FocalLoss(alpha=1, gamma=2, reduction='mean').to(device)
+        optim = torch.optim.Adam(modelRec.parameters(), lr=1e-4)
+        scaler = torch.GradScaler()
 
-    # Model initialization
-    modelRec = cls_model(userCount, itemCount, user_embSize=32, item_embSize=32)
-    if torch.cuda.device_count() > 1:
-        modelRec = nn.DataParallel(modelRec)
-    modelRec = modelRec.to(device)
+        history = {'train_loss': [], 'val_loss': [], 'val_accuracy': []}
 
-    # Loss and optimizer
-    criterion = FocalLoss(alpha=1, gamma=2, reduction='mean').to(device)
-    optim = torch.optim.Adam(modelRec.parameters(), lr=1e-3)
+        # Training loop
+        best_val_accuracy = 0.0
+        best_model_state = None
+        for epoch in range(2):
+            # Training
+            train_loss = train_epoch(modelRec, ds_trainLoader, criterion, optim, scaler, device)
+            
+            # Validation
+            val_loss, val_accuracy = validate_epoch(modelRec, ds_testLoader, criterion, device)
 
-    # GradScaler for mixed precision
-    scaler = torch.GradScaler()
+            history['train_loss'].append(train_loss)
+            history['val_loss'].append(val_loss)
+            history['val_accuracy'].append(val_accuracy)
 
-    for epoch in range(epochs):
-        modelRec.train()
-        loss_acc = 0
-        for i, (x1, x2, y, _) in enumerate(tqdm(ds_trainLoader, desc=f"Epoch {epoch+1}")):
-            x1 = x1.to(device, non_blocking=True)
-            x2 = x2.to(device, non_blocking=True)
-            y = y.to(device, non_blocking=True)
+            # Log metrics
+            mlflow.log_metrics({
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "val_accuracy": val_accuracy
+            }, step=epoch)
 
-            optim.zero_grad()
+            create_and_log_plots(history, epoch)
+
+            # TensorBoard logging
+            writer.add_scalar('Train/Loss', train_loss, epoch)
+            writer.add_scalar('Validation/Loss', val_loss, epoch)
+            writer.add_scalar('Validation/Accuracy', val_accuracy, epoch)
+
+            print(f"Epoch {epoch+1} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f} - Val Accuracy: {val_accuracy:.4f}")
+
+            # Save best model
+            if val_accuracy > best_val_accuracy:
+                best_val_accuracy = val_accuracy
+                best_model_state = modelRec.state_dict()
+
+                 # Save model state
+                model_path = f"model_epoch_{epoch}.pth"
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': modelRec.state_dict(),
+                    'optimizer_state_dict': optim.state_dict(),
+                    'val_accuracy': val_accuracy,
+                }, model_path)
+
+                # Log model artifact
+                mlflow.log_artifact(model_path)
+
+                # Log model architecture
+        # Save final model with MLflow
+        final_metrics = {
+            'final_val_accuracy': float(history['val_accuracy'][-1]),
+            'final_train_loss': float(history['train_loss'][-1]),
+            'best_val_accuracy': float(best_val_accuracy)
+        }
+        mlflow.log_metrics(final_metrics)
+        
+        # Log of the model metadata
+        metadata = {
+            'training_date': datetime.now().strftime("%Y-%m-%d"),
+            'model_version': '1.0',
+            'framework_versions': {
+                'pytorch': str(torch.__version__),
+                'numpy': str(np.__version__)
+            }
+        }
+
+        for key, value in metadata.items():
+            if isinstance(value, dict):
+                for sub_key, sub_value in value.items():
+                    mlflow.log_param(f"{key}.{sub_key}", str(sub_value))
+            else:
+                mlflow.log_param(key, value)
+        torch.save(modelRec.state_dict(), "final_model.pth")
+        writer.close()
+
+        if best_model_state is not None:
+            modelRec.load_state_dict(best_model_state)
+        return modelRec
+    
+def train_epoch(model, train_loader, criterion, optimizer, scaler, device):
+    """Training epoch"""
+    model.train()
+    total_loss = 0
+    for x1, x2, y, _ in tqdm(train_loader, desc="Training"):
+        x1, x2, y = x1.to(device), x2.to(device), y.to(device)
+        
+        optimizer.zero_grad()
+        with torch.autocast(device_type='cuda'):
+            logits = model(x1, x2)
+            loss = criterion(logits, y.squeeze())
+        
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        
+        total_loss += loss.item()
+    
+    return total_loss / len(train_loader)
+
+def validate_epoch(model, val_loader, criterion, device):
+    """Validation epoch"""
+    model.eval()
+    total_loss = 0
+    all_preds = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for x1, x2, y, _ in val_loader:
+            x1, x2, y = x1.to(device), x2.to(device), y.to(device)
+            
             with torch.autocast(device_type='cuda'):
-                logits = modelRec(x1, x2)
+                logits = model(x1, x2)
                 loss = criterion(logits, y.squeeze())
+            
+            total_loss += loss.item()
+            preds = torch.argmax(logits, dim=1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(y.squeeze().cpu().numpy())
+    
+    val_loss = total_loss / len(val_loader)
+    val_accuracy = accuracy_score(all_labels, all_preds)
+    
+    return val_loss, val_accuracy
 
-            scaler.scale(loss).backward()
-            scaler.step(optim)
-            scaler.update()
 
-            loss_acc += loss.item()
+def setup_mlflow():
+    """Configure MLflow tracking"""
+    tracking_uri = "file:./mlruns"
+    os.environ["MLFLOW_TRACKING_URI"] = tracking_uri
+    
+    mlflow.set_tracking_uri(tracking_uri)
+    experiment_name = "recommendation_experiment"
+    
+    try:
+        experiment = mlflow.get_experiment_by_name(experiment_name)
+        if experiment is None:
+            experiment_id = mlflow.create_experiment(
+                name=experiment_name,
+                artifact_location=os.path.join("mlruns", experiment_name)
+            )
+        else:
+            experiment_id = experiment.experiment_id
+    except Exception as e:
+        print(f"Warning: {e}")
+        experiment_id = 0
+    
+    mlflow.set_experiment(experiment_name)
+    return experiment_name
 
-            # Optional: Log every N batches
-            if (i + 1) % 100 == 0:
-                avg_loss = loss_acc / 100
-                print(f"Epoch {epoch+1}, Batch {i+1}, Train Loss: {avg_loss:.4f}")
-                writer.add_scalar('Train/Loss', avg_loss, epoch * len(ds_trainLoader) + i + 1)
-                loss_acc = 0
-
-        # Validation at the end of each epoch
-        modelRec.eval()
-        val_loss = 0.0
-        all_preds = []
-        all_labels = []
-
-        with torch.no_grad():
-            for x1_val, x2_val, y_val, _ in tqdm(ds_testLoader, desc="Validation"):
-                x1_val = x1_val.to(device, non_blocking=True)
-                x2_val = x2_val.to(device, non_blocking=True)
-                y_val = y_val.to(device, non_blocking=True)
-
-                with torch.autocast(device_type='cuda'):
-                    logits_val = modelRec(x1_val, x2_val)
-                    loss_val = criterion(logits_val, y_val.squeeze())
-
-                val_loss += loss_val.item()
-                preds = torch.argmax(logits_val, dim=1)
-                all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(y_val.squeeze().cpu().numpy())
-
-        avg_val_loss = val_loss / len(ds_testLoader)
-        val_accuracy = accuracy_score(all_labels, all_preds)
-
-        print(f"Epoch {epoch+1} Validation Loss: {avg_val_loss:.4f}, Accuracy: {val_accuracy:.4f}")
-        writer.add_scalar('Validation/Loss', avg_val_loss, epoch)
-        writer.add_scalar('Validation/Accuracy', val_accuracy, epoch)
-
-    writer.close()
-    return modelRec
 if __name__ == "__main__":
+    experiment_name = setup_mlflow()
+    mlflow.set_experiment(experiment_name)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     # Configuration
     # Setup device
@@ -160,7 +287,45 @@ if __name__ == "__main__":
 
     # Save model
     torch.save(model.state_dict(), 'modelRec.pth')
-
+    dict_titlEmb = encode_title(df_train,df_test)
+    all_unique_titles = pd.concat([df_train, df_test])["title"].unique()
+    title_to_idx = {title: idx for idx, title in enumerate(all_unique_titles)}
+    list_titlEmb = [dict_titlEmb[title] for title in title_to_idx]
+    title_emb_tensor = torch.stack(list_titlEmb)
     # Evaluation of the performances
-    evaluation(userCount, itemCount, device, df_train,df_test, df_combined)
+    user_stats = analyze_multiple_users(100, 42, df_test, model, device, df_combined, title_to_idx,title_emb_tensor)
+
+    mean_accuracy = np.mean([stat['overall_accuracy'] for stat in user_stats])
+    if mean_accuracy > 85:
+        metadata = {
+            'mean_accuracy': str(mean_accuracy),
+            'training_date': datetime.now().strftime("%Y-%m-%d"),
+            'model_version': '1.0'
+        }
+        
+        # Sauvegarder et récupérer l'experiment_id
+        experiment_id = save_production_model(model, "modelRec", metadata)
+        
+        if experiment_id:
+            # Utiliser l'experiment_id pour charger le modèle
+            prod_model = load_production_model("modelRec", userCount, itemCount, experiment_id)
+            
+            if prod_model is None:
+                print("Using current model as production model")
+                prod_model = model
+            else:
+                print("Production model loaded successfully")
+                
+            prod_model = prod_model.to(device)
+            
+            detailed_user_recommendations(
+                user_id=10,
+                modelRec=prod_model,
+                df_combined=df_combined,
+                device=device,
+                df_train=df_train,
+                df_test=df_test,
+                title_to_idx=title_to_idx,
+                title_emb_tensor=title_emb_tensor
+            )
 

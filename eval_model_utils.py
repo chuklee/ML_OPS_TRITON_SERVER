@@ -182,10 +182,6 @@ def detailed_user_recommendations(user_id, modelRec, df_combined, device, df_tra
             if predicted_like == 1:  # Model predicted "like"
                 liked_correct += 1
                 
-            print(f"Movie: {movie['title']}")
-            print(f"Actual Rating: {movie['rating']:.1f}")
-            print(f"Predicted: {'Like' if predicted_like == 1 else 'Dislike'}")
-            print(f"Prediction {'Correct' if predicted_like == 1 else 'Incorrect'}\n")
 
     # Predict likes for disliked movies (test set only)
     print("\nPredictions for Movies User Disliked in Test Set (Rating < 4):")
@@ -220,10 +216,6 @@ def detailed_user_recommendations(user_id, modelRec, df_combined, device, df_tra
             if predicted_like == 0:  # Model predicted "dislike"
                 disliked_correct += 1
                 
-            print(f"Movie: {movie['title']}")
-            print(f"Actual Rating: {movie['rating']:.1f}")
-            print(f"Predicted: {'Like' if predicted_like == 1 else 'Dislike'}")
-            print(f"Prediction {'Correct' if predicted_like == 0 else 'Incorrect'}\n")
 
     # Calculate and display statistics (test set only)
     print("\n=== Prediction Statistics (Test Set Only) ===")
@@ -433,4 +425,6 @@ def evaluation(userCount, itemCount, device, df_train,df_test, df_combined):
     title_emb_tensor = torch.stack(list_titlEmb)
     test_user_id = 10  # You can change this to any user ID in your dataset
     detailed_user_recommendations(test_user_id, modelRec, df_combined, device, df_train,df_test, title_to_idx, title_emb_tensor)
-    analyze_multiple_users(150, 42, df_test, modelRec, device, df_combined, title_to_idx,title_emb_tensor)
+    user_stats = analyze_multiple_users(150, 42, df_test, modelRec, device, df_combined, title_to_idx,title_emb_tensor)
+    print(user_stats)
+    return user_stats
