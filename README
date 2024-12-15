@@ -10,17 +10,30 @@ This project is a movie recommendation system built using PyTorch, FastAPI, and 
 - **data_pipeline.py**: Manages data loading, preprocessing, and feature extraction.
 - **utils.py**: Contains utility functions for data processing, negative sampling, and more.
 - **train.py**: Script to train the recommendation model.
+- **init_mlflow.py**: Configure MLflow for logging and model tracking.
+- **hyperparameter_search.py**: Script to search for the best hyperparameters with MLflow tracking.
+- **eval_model_utils.py**: Contains functions to evaluate the model with MLflow logging.
 - **README.md**: This file.
 
 ## How It Works
 
 1. **Data Preparation**: The system uses the MovieLens dataset. The data is preprocessed to include user and item features, and negative samples are generated for training.
 
-2. **Model Training**: The model is trained using a combination of user and item embeddings, along with additional features. The training process includes logging to TensorBoard for monitoring.
+2. **Model Training**: The model is trained using a combination of user and item embeddings, along with additional features. The training process includes logging to TensorBoard for monitoring. The model is saved in MLflow for tracking, with the hyperparameters and metrics logged.
 
 3. **Model Serving**: The trained model is loaded and served using FastAPI. User embeddings are cached in Redis for efficient retrieval.
 
 4. **Recommendation Retrieval**: For a given user, the system retrieves their embedding, computes similarities with item embeddings using FAISS, and returns the top-k recommendations.
+
+5. **Model Evaluation**: The model is evaluated using the MovieLens dataset. The evaluation results are logged to MLflow for tracking. The evaluation is based on the accuracy of the model in predicting user likes.
+
+## MLflow Integration
+
+The project uses MLflow for :
+1. Experiment tracking
+2. Hyperparameter tuning
+3. Model evaluation
+4. Performance monitoring
 
 ## Getting Started
 
@@ -46,6 +59,14 @@ This project is a movie recommendation system built using PyTorch, FastAPI, and 
 3. **Download and preprocess the dataset**:
    The dataset will be automatically downloaded and preprocessed when you run the training script.
 
+### Initialize MLflow
+
+To initialize MLflow, run:
+```bash
+python init_mlflow.py
+```
+This will start the MLflow server and set up the tracking server.
+
 ### Training the Model
 
 To train the model, run the following command:
@@ -53,6 +74,25 @@ To train the model, run the following command:
 python train.py
 ```
 This will download the dataset (if not already present), preprocess it, and train the model. The trained model will be saved as `modelRec.pth`.
+This will also log the experiment in MLflow. The experiment will be named `recommendation_experiment`. It can be viewed at `http://localhost:5000`.
+This will also evaluate the model.
+
+### Model Management
+- The models are saved automatically in MLflow when they have an accuracy higher than 85%
+- Every model is saved with his metadata:
+   - Accuracy / Loss
+   - Training date
+   - Framework version
+-  You can also download the model from MLflow.
+
+### Hyperparameter Search
+
+To perform hyperparameter search, run:
+```bash
+python hyperparameter_search.py
+```
+This will search for the best hyperparameters for the model. The best hyperparameters will be logged in MLflow.
+Some visualizations are also created and logged in MLflow, with confusion matrix and learning curves.
 
 ### Starting the API Server
 
