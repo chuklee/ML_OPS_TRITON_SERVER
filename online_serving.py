@@ -12,6 +12,8 @@ import os
 from fastapi.responses import FileResponse
 import tempfile
 import shutil
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
@@ -21,6 +23,18 @@ model_server = ModelServer(
     model_path='models/modelRec.pth',
     device='cuda' if torch.cuda.is_available() else 'cpu'
 )
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount static files at /static instead of root
+app.mount("/static", StaticFiles(directory="static", html=True), name="static")
 
 class UserFeatures(BaseModel):
     age: int
@@ -206,6 +220,9 @@ async def get_recommendations(
     except Exception as e:
         print(f"Error in get_recommendations: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+@app.get("/")
+async def root():
+    return {"message": "Welcome to the Movie Recommender API"}
 
 @app.post("/users/new")
 async def create_new_user(user_features: UserFeatures):
@@ -308,7 +325,7 @@ async def download_model(background_tasks: BackgroundTasks, run_id: Optional[str
             
     except Exception as e:
         print(f"Error downloading model: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
