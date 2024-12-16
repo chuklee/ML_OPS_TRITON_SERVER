@@ -137,16 +137,9 @@ def train_model(df_train, df_test, userCount, itemCount, device):
                 best_model_state = modelRec.state_dict()
 
                  # Save model state
-                model_path = f"model_epoch_{epoch}.pth"
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': modelRec.state_dict(),
-                    'optimizer_state_dict': optim.state_dict(),
-                    'val_accuracy': val_accuracy,
-                }, model_path)
+
 
                 # Log model artifact
-                mlflow.log_artifact(model_path)
 
                 # Log model architecture
         # Save final model with MLflow
@@ -173,7 +166,6 @@ def train_model(df_train, df_test, userCount, itemCount, device):
                     mlflow.log_param(f"{key}.{sub_key}", str(sub_value))
             else:
                 mlflow.log_param(key, value)
-        torch.save(modelRec.state_dict(), "final_model.pth")
         writer.close()
 
         if best_model_state is not None:
@@ -286,7 +278,6 @@ if __name__ == "__main__":
     model = train_model(df_train, df_test, userCount, itemCount, device)
 
     # Save model
-    torch.save(model.state_dict(), 'modelRec.pth')
     dict_titlEmb = encode_title(df_train,df_test)
     all_unique_titles = pd.concat([df_train, df_test])["title"].unique()
     title_to_idx = {title: idx for idx, title in enumerate(all_unique_titles)}

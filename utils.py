@@ -500,6 +500,15 @@ def create_comparison_visualizations(results):
 def save_production_model(model, model_name, metadata):
     """Save the production model"""
     try:
+        os.makedirs('models', exist_ok=True)
+        
+        local_model_path = os.path.join('models', f"{model_name}.pth")
+        
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'metadata': metadata
+        }, local_model_path)
+        print(f"\nModel saved locally at: {local_model_path}")
         # Create a new experiment if it doesn't exist
         mlflow.set_experiment("recommendation_experiment")
         

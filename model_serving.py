@@ -10,8 +10,14 @@ class ModelServer:
         self.device = torch.device(device)
         
         # Initialize model
-        self.model = cls_model(userCount=6040, itemCount=3706)  # Update with your actual counts
-        self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
+        user_emb_weights = checkpoint['model_state_dict']['m_userEmb.weight']
+        item_emb_weights = checkpoint['model_state_dict']['m_itemEmb.weight']
+        userCount = user_emb_weights.size(0)
+        itemCount = item_emb_weights.size(0)
+        self.model = cls_model(userCount=userCount, itemCount=itemCount)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.to(self.device)
         self.model.eval()
         

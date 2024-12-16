@@ -150,7 +150,6 @@ def detailed_user_recommendations(user_id, modelRec, df_combined, device, df_tra
     ], dtype=torch.float32).unsqueeze(0).to(device)
     
     # Predict likes for liked movies (test set only)
-    print("\nPredictions for Movies User Liked in Test Set (Rating >= 4):")
     for _, movie in liked_movies.iterrows():
         liked_total += 1
         
@@ -184,7 +183,6 @@ def detailed_user_recommendations(user_id, modelRec, df_combined, device, df_tra
                 
 
     # Predict likes for disliked movies (test set only)
-    print("\nPredictions for Movies User Disliked in Test Set (Rating < 4):")
     for _, movie in disliked_movies.iterrows():
         disliked_total += 1
         
