@@ -21,6 +21,7 @@ NEGATIVE_SAMPLES_PER_USER = 80
 
 import torch
 from torch.utils.data import Dataset
+from datetime import datetime
 
 class cls_dataset(Dataset):
     def __init__(self, data, user_count, item_count, title_emb_tensor, title_to_idx):
@@ -509,6 +510,7 @@ def save_production_model(model, model_name, metadata):
             'metadata': metadata
         }, local_model_path)
         print(f"\nModel saved locally at: {local_model_path}")
+        
         # Create a new experiment if it doesn't exist
         mlflow.set_experiment("recommendation_experiment")
         
@@ -520,16 +522,36 @@ def save_production_model(model, model_name, metadata):
                 'metadata': metadata
             }, model_path)
             
-            # Log in MLflow
+            # Log metrics
+            metrics_to_log = {
+                'val_accuracy': float(metadata.get('val_accuracy', 0.0)),
+                'train_loss': float(metadata.get('train_loss', 0.0)),
+                'final_val_accuracy': float(metadata.get('val_accuracy', 0.0)),
+                'final_train_loss': float(metadata.get('train_loss', 0.0))
+            }
+            mlflow.log_metrics(metrics_to_log)
+            
+            # Log tags
+            tags_to_log = {
+                'model_version': metadata.get('model_version', '1.0'),
+                'training_date': metadata.get('training_date', datetime.now().strftime("%Y-%m-%d"))
+            }
+            for key, value in tags_to_log.items():
+                mlflow.set_tag(key, value)
+            
+            # Log model artifact
             mlflow.log_artifact(model_path)
-            mlflow.log_params(metadata)
+            
+            # Log config if present
+            if 'config' in metadata:
+                mlflow.log_params(metadata['config'])
             
             print(f"\nModel saved in MLflow:")
             print(f"Run ID: {run.info.run_id}")
             print(f"Experiment ID: {run.info.experiment_id}")
             
             os.remove(model_path)
-            return run.info.experiment_id  # Return the experiment ID
+            return run.info.experiment_id
             
     except Exception as e:
         print(f"Error saving model: {e}")
