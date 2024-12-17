@@ -50,6 +50,8 @@ movie-recommender/
 ├── init_mlflow.py       # MLflow configuration
 ├── hyperparameter_search.py  # Hyperparameter tuning
 └── eval_model_utils.py   # Evaluation utilities
+
+
 ```
 
 ## 🚀 Getting Started
@@ -143,7 +145,29 @@ Content-Type: application/json
 POST /recommendations/{user_id}?batch_size=20
 ```
 
+### Train Model
+```http
+POST /model/train
+Content-Type: application/json
 
+{
+    "epochs": 2,
+    "batch_size": 512,
+    "learning_rate": 0.0001,
+    "user_emb_size": 32,
+    "item_emb_size": 32
+}
+```
+
+### Get Model Status
+```http
+GET /model/status
+```
+
+### Download Model
+```http
+GET /model/download
+```
 
 ## 📈 Monitoring & Logging
 

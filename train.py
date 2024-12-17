@@ -45,10 +45,12 @@ warnings.filterwarnings('ignore', category=MovedIn20Warning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 
-def train_model(df_train, df_test, userCount, itemCount, device):
+def train_model(df_train, df_test, userCount, itemCount, device, config):
     """
     Train the recommendation model with MLflow tracking
     """
+    experiment_name = setup_mlflow()
+    mlflow.set_experiment(experiment_name)
     os.makedirs("mlruns", exist_ok=True)
     with mlflow.start_run(run_name=f"training_{datetime.now().strftime('%Y%m%d_%H%M%S')}") as run:
         print(f"\nMLflow tracking URI: {mlflow.get_tracking_uri()}")
@@ -62,11 +64,11 @@ def train_model(df_train, df_test, userCount, itemCount, device):
         mlflow.log_params({
             "userCount": userCount,
             "itemCount": itemCount,
-            "epochs": 2,
-            "batch_size": 512,
-            "learning_rate": 1e-4,
-            "user_embSize": 32,
-            "item_embSize": 32,
+            "epochs": config["epochs"],
+            "batch_size": config["batch_size"],
+            "learning_rate": config["learning_rate"],
+            "user_embSize": config["user_embSize"],
+            "item_embSize": config["item_embSize"],
             "model_architecture": "cls_model"
         })
 
@@ -74,7 +76,7 @@ def train_model(df_train, df_test, userCount, itemCount, device):
         writer = SummaryWriter(log_dir='runs/recommendation_experiment')
 
         # Model initialization
-        modelRec = cls_model(userCount, itemCount, user_embSize=32, item_embSize=32)
+        modelRec = cls_model(userCount, itemCount, user_embSize=config["user_embSize"], item_embSize=config["item_embSize"])
         if torch.cuda.device_count() > 1:
             modelRec = nn.DataParallel(modelRec)
         modelRec = modelRec.to(device)
@@ -91,12 +93,12 @@ def train_model(df_train, df_test, userCount, itemCount, device):
         ds_test = cls_dataset(df_test, userCount, itemCount, title_emb_tensor, title_to_idx)
 
         num_workers = multiprocessing.cpu_count()
-        ds_trainLoader = DataLoader(ds_train, batch_size=512, num_workers=num_workers, pin_memory=True)
+        ds_trainLoader = DataLoader(ds_train, batch_size=config["batch_size"], num_workers=num_workers, pin_memory=True)
         ds_testLoader = DataLoader(ds_test, batch_size=1000, num_workers=num_workers, pin_memory=True)
 
         # Training setup
         criterion = FocalLoss(alpha=1, gamma=2, reduction='mean').to(device)
-        optim = torch.optim.Adam(modelRec.parameters(), lr=1e-4)
+        optim = torch.optim.Adam(modelRec.parameters(), lr=config["learning_rate"])
         scaler = torch.GradScaler()
 
         history = {'train_loss': [], 'val_loss': [], 'val_accuracy': []}
@@ -104,7 +106,7 @@ def train_model(df_train, df_test, userCount, itemCount, device):
         # Training loop
         best_val_accuracy = 0.0
         best_model_state = None
-        for epoch in range(2):
+        for epoch in range(config["epochs"]):
             # Training
             train_loss = train_epoch(modelRec, ds_trainLoader, criterion, optim, scaler, device)
             
@@ -136,15 +138,13 @@ def train_model(df_train, df_test, userCount, itemCount, device):
                 best_val_accuracy = val_accuracy
                 best_model_state = modelRec.state_dict()
 
-                 # Save model state
-
-
-                # Log model artifact
-
-                # Log model architecture
+        # Store final metrics in the model for easy access
+        modelRec.val_accuracy = best_val_accuracy
+        modelRec.train_loss = history['train_loss'][-1]
+        
         # Save final model with MLflow
         final_metrics = {
-            'final_val_accuracy': float(history['val_accuracy'][-1]),
+            'final_val_accuracy': float(best_val_accuracy),
             'final_train_loss': float(history['train_loss'][-1]),
             'best_val_accuracy': float(best_val_accuracy)
         }
@@ -227,14 +227,21 @@ def setup_mlflow():
     experiment_name = "recommendation_experiment"
     
     try:
-        experiment = mlflow.get_experiment_by_name(experiment_name)
+        # Get MLflow client
+        client = mlflow.tracking.MlflowClient()
+        
+        # Get or create experiment
+        experiment = client.get_experiment_by_name(experiment_name)
+        
+        # Create experiment if it doesn't exist
         if experiment is None:
-            experiment_id = mlflow.create_experiment(
+            experiment_id = client.create_experiment(
                 name=experiment_name,
                 artifact_location=os.path.join("mlruns", experiment_name)
             )
         else:
             experiment_id = experiment.experiment_id
+            
     except Exception as e:
         print(f"Warning: {e}")
         experiment_id = 0
@@ -243,10 +250,15 @@ def setup_mlflow():
     return experiment_name
 
 if __name__ == "__main__":
-    experiment_name = setup_mlflow()
-    mlflow.set_experiment(experiment_name)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     # Configuration
+    config = {
+        "epochs": 2,
+        "batch_size": 512,
+        "learning_rate": 1e-4,
+        "user_embSize": 32,
+        "item_embSize": 32,
+    }
     # Setup device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -275,7 +287,7 @@ if __name__ == "__main__":
     df_train, df_test = prepare_data(df_combined, df_movies, df_users)
 
     # Train model
-    model = train_model(df_train, df_test, userCount, itemCount, device)
+    model = train_model(df_train, df_test, userCount, itemCount, device, config)
 
     # Save model
     dict_titlEmb = encode_title(df_train,df_test)
