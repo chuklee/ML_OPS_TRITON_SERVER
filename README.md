@@ -48,7 +48,6 @@ movie-recommender/
 ├── utils.py             # Utility functions
 ├── train.py             # Training script
 ├── init_mlflow.py       # MLflow configuration
-├── hyperparameter_search.py  # Hyperparameter tuning
 └── eval_model_utils.py   # Evaluation utilities
 
 
@@ -81,7 +80,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Running the System
+### Running the System without Docker
 
 1. **Initialize MLflow**:
 ```bash
@@ -101,6 +100,22 @@ python online_serving.py
 4. **Access the web interface**:
 - Open `http://localhost:8000/static/index.html` in your browser
 - Try the demo by creating a new user and getting recommendations
+
+
+### Running the System with Docker
+
+1. **Run the Docker container**:
+```bash
+docker-compose up --build
+```
+
+2. **Access the web interface**:
+- Open `http://localhost:8000/static/index.html` in your browser
+- Try the demo by creating a new user and getting recommendations
+
+3. **Access the MLflow dashboard**:
+- Open `http://localhost:5000` in your browser
+- View experiments and model metrics
 
 ### Monitoring & Management
 
@@ -175,4 +190,3 @@ The system provides comprehensive monitoring through:
 - MLflow experiment tracking
 - Real-time API metrics
 - Model performance monitoring
-- System health checks

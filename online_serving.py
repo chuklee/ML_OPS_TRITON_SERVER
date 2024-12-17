@@ -14,26 +14,86 @@ import tempfile
 import shutil
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+import gc
 
 app = FastAPI()
 
+def initialize_model():
+    """Initialize or train the model if it doesn't exist"""
+    model_path = 'models/modelRec.pth'
+    
+    if not os.path.exists(model_path):
+        print("No model found. Starting training...")
+        config = {
+            "epochs": 2,
+            "batch_size": 128,
+            "learning_rate": 1e-4,
+            "user_embSize": 32,
+            "item_embSize": 32
+        }
+        
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {device}")
+        
+        try:
+            # Télécharger et préparer les données
+            download_and_extract_dataset()
+            df_movies, df_ratings, df_users = read_dataset()
+            df_combined = preprocess_dataset(df_movies, df_ratings, df_users)
+            
+            # Libérer la mémoire
+            gc.collect()
+            
+            # Calculer userCount et itemCount
+            max_user_id = df_combined["user_id"].max()
+            max_item_id = df_combined["item_id"].max()
+            userCount = max_user_id + 1
+            itemCount = max_item_id + 1
+            
+            # Préparer les données d'entraînement
+            df_train, df_test = prepare_data(df_combined, df_movies, df_users)
+            
+            # Libérer la mémoire
+            del df_combined, df_movies, df_users
+            gc.collect()
+            
+            # Entraîner le modèle
+            model = train_model(df_train, df_test, userCount, itemCount, device, config)
+            
+            # Sauvegarder le modèle
+            os.makedirs('models', exist_ok=True)
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'metadata': {
+                    'training_date': datetime.now().strftime("%Y-%m-%d"),
+                    'model_version': '1.0'
+                }
+            }, model_path)
+            print(f"Model trained and saved at {model_path}")
+            
+        except Exception as e:
+            print(f"Error during model initialization: {str(e)}")
+            raise
+    
+    return ModelServer(
+        model_path='models/modelRec.pth',
+        device='cpu'  # Forcer l'utilisation du CPU
+    )
+
 # Initialize services
 data_pipeline = DataPipeline()
-model_server = ModelServer(
-    model_path='models/modelRec.pth',
-    device='cuda' if torch.cuda.is_available() else 'cpu'
-)
+model_server = initialize_model()
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount static files at /static instead of root
+# Mount static files
 app.mount("/static", StaticFiles(directory="static", html=True), name="static")
 
 class UserFeatures(BaseModel):
@@ -261,8 +321,8 @@ async def create_new_user(user_features: UserFeatures):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/model/download")
-async def download_model(background_tasks: BackgroundTasks, run_id: Optional[str] = None):
-    """Download a model from MLflow. If no run_id is provided, downloads the latest model."""
+async def download_model(run_id: Optional[str] = None):
+    """Download a model from MLflow to models directory. If no run_id is provided, downloads the latest model."""
     try:
         # Get MLflow client
         client = mlflow.tracking.MlflowClient()
@@ -286,45 +346,37 @@ async def download_model(background_tasks: BackgroundTasks, run_id: Optional[str
                 raise HTTPException(status_code=404, detail="No runs found")
             run_id = runs[0].info.run_id
         
-        # Create a temporary directory that will persist until the file is sent
-        temp_dir = tempfile.mkdtemp()
+        # Use absolute paths in Docker container
+        models_dir = "/app/models"
+        model_path = os.path.join(models_dir, "modelRec.pth")
+        
+        # Ensure models directory exists
+        os.makedirs(models_dir, exist_ok=True)
+        
         try:
-            # Download the model file
-            model_path = client.download_artifacts(
+            # Download the model file directly to models directory
+            downloaded_path = client.download_artifacts(
                 run_id=run_id,
                 path="modelRec.pth",
-                dst_path=temp_dir
+                dst_path=models_dir
             )
             
             if not os.path.exists(model_path):
                 raise HTTPException(status_code=404, detail="Model file not found")
             
-            # Add cleanup task to background tasks
-            def cleanup_temp_dir():
-                try:
-                    if os.path.exists(temp_dir):
-                        shutil.rmtree(temp_dir)
-                except Exception as e:
-                    print(f"Error cleaning up temp directory: {e}")
-            
-            background_tasks.add_task(cleanup_temp_dir)
-            
-            # Return the file
-            return FileResponse(
-                path=model_path,
-                filename="modelRec.pth",
-                media_type="application/octet-stream",
-                headers={"Content-Disposition": "attachment; filename=modelRec.pth"}
-            )
+            # Return success message instead of file
+            return {
+                "status": "success",
+                "message": f"Model downloaded successfully to {model_path}",
+                "run_id": run_id
+            }
             
         except Exception as e:
-            # Clean up in case of error
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-            raise e
+            raise HTTPException(status_code=500, detail=f"Error downloading model: {str(e)}")
             
     except Exception as e:
         print(f"Error downloading model: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

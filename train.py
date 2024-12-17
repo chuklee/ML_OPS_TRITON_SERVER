@@ -49,6 +49,7 @@ def train_model(df_train, df_test, userCount, itemCount, device, config):
     """
     Train the recommendation model with MLflow tracking
     """
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
     experiment_name = setup_mlflow()
     mlflow.set_experiment(experiment_name)
     os.makedirs("mlruns", exist_ok=True)
@@ -220,34 +221,9 @@ def validate_epoch(model, val_loader, criterion, device):
 
 def setup_mlflow():
     """Configure MLflow tracking"""
-    tracking_uri = "file:./mlruns"
-    os.environ["MLFLOW_TRACKING_URI"] = tracking_uri
-    
-    mlflow.set_tracking_uri(tracking_uri)
-    experiment_name = "recommendation_experiment"
-    
-    try:
-        # Get MLflow client
-        client = mlflow.tracking.MlflowClient()
-        
-        # Get or create experiment
-        experiment = client.get_experiment_by_name(experiment_name)
-        
-        # Create experiment if it doesn't exist
-        if experiment is None:
-            experiment_id = client.create_experiment(
-                name=experiment_name,
-                artifact_location=os.path.join("mlruns", experiment_name)
-            )
-        else:
-            experiment_id = experiment.experiment_id
-            
-    except Exception as e:
-        print(f"Warning: {e}")
-        experiment_id = 0
-    
-    mlflow.set_experiment(experiment_name)
-    return experiment_name
+    from init_mlflow import init_mlflow
+    experiment_id = init_mlflow()
+    return "recommendation_experiment"
 
 if __name__ == "__main__":
     os.environ["TOKENIZERS_PARALLELISM"] = "false"

@@ -4,10 +4,22 @@ import numpy as np
 from typing import List, Dict, Optional
 import redis
 from models import cls_model
+import os
 
 class ModelServer:
-    def __init__(self, model_path: str, device: str, redis_host: str = 'localhost', redis_port: int = 6379):
+    def __init__(self, model_path: str, device: str):
         self.device = torch.device(device)
+        
+        # Use environment variables for Redis connection
+        redis_host = os.getenv('REDIS_HOST', 'localhost')
+        redis_port = int(os.getenv('REDIS_PORT', 6379))
+        
+        # Initialize Redis client
+        self.redis_client = redis.Redis(
+            host=redis_host,
+            port=redis_port,
+            decode_responses=False
+        )
         
         # Initialize model
 
@@ -20,9 +32,6 @@ class ModelServer:
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.to(self.device)
         self.model.eval()
-        
-        # Initialize Redis for caching
-        self.redis_client = redis.Redis(host=redis_host, port=redis_port, decode_responses=False)
         
         # Initialize FAISS index for item embeddings
         self.build_item_index()
