@@ -1,0 +1,41 @@
+# ML et calcul
+faiss-gpu-cu12
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
+numpy
+pandas
+scikit-learn
+sentence-transformers
+jupyter
+ipywidgets
+
+# API et serveur
+fastapi
+uvicorn
+python-multipart
+
+# Visualisation et monitoring
+matplotlib
+seaborn
+tensorboard
+tqdm
+
+# MLflow et tracking
+mlflow
+psycopg2-binary
+pyyaml
+
+# Base de données et cache
+redis
+sqlalchemy
+
+# Utilitaires
+pyyaml
+requests
+wget
+
+# Optionnel pour le développement
+pytest
+black
+flake8

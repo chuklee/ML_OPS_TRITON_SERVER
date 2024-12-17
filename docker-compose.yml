@@ -1,0 +1,56 @@
+version: '3.9'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/app/models
+      - ./mlruns:/app/mlruns
+      - ./data:/app/data
+    environment:
+      - REDIS_HOST=redis
+      - MLFLOW_TRACKING_URI=file:///app/mlruns
+      - TOKENIZERS_PARALLELISM=false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:6.2-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/app/mlruns
+    environment:
+      - MLFLOW_TRACKING_URI=file:///app/mlruns
+      - TOKENIZERS_PARALLELISM=false
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+volumes:
+  redis_data:
