@@ -1,3 +1,74 @@
+// Add this function to check initial training status
+async function checkInitialTrainingStatus() {
+    const trainButton = document.getElementById('trainButton');
+    const trainingStatus = document.getElementById('trainingStatus');
+    const progressFill = trainingStatus.querySelector('.progress-fill');
+
+    try {
+        const statusResponse = await fetch('/model/training-status');
+        if (!statusResponse.ok) {
+            throw new Error(`HTTP error! status: ${statusResponse.status}`);
+        }
+        
+        const statusData = await statusResponse.json();
+        
+        if (statusData.is_training) {
+            // Training is in progress, disable button and show status
+            trainButton.disabled = true;
+            trainingStatus.style.display = 'block';
+            updateTrainingStatus(statusData);
+            
+            // Start polling for updates
+            startStatusPolling();
+        }
+    } catch (error) {
+        console.error('Error checking initial training status:', error);
+    }
+}
+
+// Add this function to handle status polling
+function startStatusPolling() {
+    const trainButton = document.getElementById('trainButton');
+    const statusCheckInterval = setInterval(async () => {
+        try {
+            const statusResponse = await fetch('/model/training-status');
+            
+            if (!statusResponse.ok) {
+                throw new Error(`HTTP error! status: ${statusResponse.status}`);
+            }
+            
+            const statusData = await statusResponse.json();
+            
+            // Update the status display
+            updateTrainingStatus(statusData);
+            
+            // If training is complete or failed, stop polling
+            if (!statusData.is_training) {
+                clearInterval(statusCheckInterval);
+                trainButton.disabled = false;
+                
+                if (statusData.status === 'completed') {
+                    alert(`Training completed successfully!\nValidation Accuracy: ${statusData.metrics.final_val_accuracy.toFixed(4)}`);
+                } else if (statusData.status === 'failed') {
+                    alert(`Training failed: ${statusData.error}`);
+                    const progressFill = document.querySelector('.progress-fill');
+                    progressFill.style.backgroundColor = '#dc3545';
+                }
+            }
+        } catch (error) {
+            console.error('Status check error:', error);
+            if (error.message.includes('Failed to fetch')) {
+                console.log('Connection error, will retry...');
+            } else {
+                clearInterval(statusCheckInterval);
+                trainButton.disabled = false;
+                alert('Error checking training status. Please check the console for details.');
+            }
+        }
+    }, 1000);
+}
+
+// Modify the train button click handler to use the common polling function
 document.getElementById('trainButton').addEventListener('click', async () => {
     const trainButton = document.getElementById('trainButton');
     const trainingStatus = document.getElementById('trainingStatus');
@@ -32,43 +103,7 @@ document.getElementById('trainButton').addEventListener('click', async () => {
         
         if (result.status === 'training_started') {
             // Start polling for training status
-            const statusCheckInterval = setInterval(async () => {
-                try {
-                    const statusResponse = await fetch('/model/training-status');
-                    
-                    if (!statusResponse.ok) {
-                        throw new Error(`HTTP error! status: ${statusResponse.status}`);
-                    }
-                    
-                    const statusData = await statusResponse.json();
-                    
-                    // Update the status display
-                    updateTrainingStatus(statusData);
-                    
-                    // If training is complete or failed, stop polling
-                    if (!statusData.is_training) {
-                        clearInterval(statusCheckInterval);
-                        trainButton.disabled = false;
-                        
-                        if (statusData.status === 'completed') {
-                            alert(`Training completed successfully!\nValidation Accuracy: ${statusData.metrics.final_val_accuracy.toFixed(4)}`);
-                        } else if (statusData.status === 'failed') {
-                            alert(`Training failed: ${statusData.error}`);
-                            progressFill.style.backgroundColor = '#dc3545';
-                        }
-                    }
-                } catch (error) {
-                    console.error('Status check error:', error);
-                    // Don't stop polling on temporary errors
-                    if (error.message.includes('Failed to fetch')) {
-                        console.log('Connection error, will retry...');
-                    } else {
-                        clearInterval(statusCheckInterval);
-                        trainButton.disabled = false;
-                        alert('Error checking training status. Please check the console for details.');
-                    }
-                }
-            }, 1000); // Poll every second instead of every 2 seconds
+            startStatusPolling();
         }
     } catch (error) {
         console.error('Training error:', error);
@@ -165,3 +200,6 @@ function displayRecommendations(movies) {
         recommendationsList.appendChild(movieCard);
     });
 }
+
+// Add this at the end of your script to check status when page loads
+document.addEventListener('DOMContentLoaded', checkInitialTrainingStatus);
