@@ -63,6 +63,7 @@ def train_model(df_train, df_test, userCount, itemCount, device, config, progres
         print("  Then visit: http://localhost:6006")
         print("- MLflow UI: mlflow ui")
         print("  Then visit: http://localhost:5000\n")
+        
         # Log parameters
         mlflow.log_params({
             "userCount": userCount,
@@ -110,9 +111,15 @@ def train_model(df_train, df_test, userCount, itemCount, device, config, progres
         total_batches = len(ds_trainLoader)
         best_val_accuracy = 0.0
         best_model_state = None
+        global_step = 0
         
         for epoch in range(config["epochs"]):
+            epoch_train_loss = 0.0
+            epoch_train_accuracy = 0.0
+            num_batches = 0
+            
             # Training
+            modelRec.train()
             for batch_idx, (x1, x2, y, _) in enumerate(ds_trainLoader):
                 # Update progress if callback is provided
                 if progress_callback:
@@ -129,57 +136,76 @@ def train_model(df_train, df_test, userCount, itemCount, device, config, progres
                 scaler.step(optim)
                 scaler.update()
                 
-                history['train_loss'].append(loss.item())
+                # Calculate batch accuracy
                 preds = torch.argmax(logits, dim=1)
-                history['val_accuracy'].append(accuracy_score(y.squeeze().cpu().numpy(), preds.cpu().numpy()))
+                batch_accuracy = (preds == y.squeeze()).float().mean().item()
                 
-                # TensorBoard logging
-                writer.add_scalar('Train/Loss', loss.item(), epoch * total_batches + batch_idx)
-                writer.add_scalar('Validation/Accuracy', history['val_accuracy'][-1], epoch * total_batches + batch_idx)
-
-                print(f"Epoch {epoch+1} - Train Loss: {loss.item():.4f} - Val Accuracy: {history['val_accuracy'][-1]:.4f}")
-
-                # Save best model
-                if history['val_accuracy'][-1] > best_val_accuracy:
-                    best_val_accuracy = history['val_accuracy'][-1]
-                    best_model_state = modelRec.state_dict()
-
+                # Update epoch metrics
+                epoch_train_loss += loss.item()
+                epoch_train_accuracy += batch_accuracy
+                num_batches += 1
+                
+                # Log metrics every N batches
+                if batch_idx % 10 == 0:
+                    mlflow.log_metrics({
+                        "batch_train_loss": loss.item(),
+                        "batch_train_accuracy": batch_accuracy
+                    }, step=global_step)
+                    
+                global_step += 1
+            
+            # Calculate epoch averages
+            epoch_train_loss /= num_batches
+            epoch_train_accuracy /= num_batches
+            
             # Validation
+            modelRec.eval()
             val_loss, val_accuracy = validate_epoch(modelRec, ds_testLoader, criterion, device)
-
-            history['train_loss'].append(history['train_loss'][-1])
+            
+            # Store in history
+            history['train_loss'].append(epoch_train_loss)
             history['val_loss'].append(val_loss)
             history['val_accuracy'].append(val_accuracy)
-
-            # Log metrics
+            
+            # Log epoch metrics
             mlflow.log_metrics({
-                "train_loss": history['train_loss'][-1],
-                "val_loss": val_loss,
-                "val_accuracy": val_accuracy
+                "epoch_train_loss": epoch_train_loss,
+                "epoch_train_accuracy": epoch_train_accuracy,
+                "epoch_val_loss": val_loss,
+                "epoch_val_accuracy": val_accuracy
             }, step=epoch)
-
-            create_and_log_plots(history, epoch)
-
+            
             # TensorBoard logging
-            writer.add_scalar('Train/Loss', history['train_loss'][-1], epoch)
+            writer.add_scalar('Train/Loss', epoch_train_loss, epoch)
+            writer.add_scalar('Train/Accuracy', epoch_train_accuracy, epoch)
             writer.add_scalar('Validation/Loss', val_loss, epoch)
             writer.add_scalar('Validation/Accuracy', val_accuracy, epoch)
-
-            print(f"Epoch {epoch+1} - Train Loss: {history['train_loss'][-1]:.4f} - Val Loss: {val_loss:.4f} - Val Accuracy: {val_accuracy:.4f}")
-
-        # Store final metrics in the model for easy access
+            
+            print(f"Epoch {epoch+1}/{config['epochs']}:")
+            print(f"Train Loss: {epoch_train_loss:.4f}, Train Acc: {epoch_train_accuracy:.4f}")
+            print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}")
+            
+            # Save best model
+            if val_accuracy > best_val_accuracy:
+                best_val_accuracy = val_accuracy
+                best_model_state = modelRec.state_dict()
+                
+                # Log best metrics
+                mlflow.log_metrics({
+                    "best_val_accuracy": best_val_accuracy
+                }, step=epoch)
+        
+        # Store final metrics in the model
         modelRec.val_accuracy = best_val_accuracy
         modelRec.train_loss = history['train_loss'][-1]
         
-        # Save final model with MLflow
-        final_metrics = {
+        # Log final metrics
+        mlflow.log_metrics({
             'final_val_accuracy': float(best_val_accuracy),
-            'final_train_loss': float(history['train_loss'][-1]),
-            'best_val_accuracy': float(best_val_accuracy)
-        }
-        mlflow.log_metrics(final_metrics)
+            'final_train_loss': float(history['train_loss'][-1])
+        })
         
-        # Log of the model metadata
+        # Log model metadata
         metadata = {
             'training_date': datetime.now().strftime("%Y-%m-%d"),
             'model_version': '1.0',
@@ -188,15 +214,16 @@ def train_model(df_train, df_test, userCount, itemCount, device, config, progres
                 'numpy': str(np.__version__)
             }
         }
-
+        
         for key, value in metadata.items():
             if isinstance(value, dict):
                 for sub_key, sub_value in value.items():
                     mlflow.log_param(f"{key}.{sub_key}", str(sub_value))
             else:
                 mlflow.log_param(key, value)
+        
         writer.close()
-
+        
         if best_model_state is not None:
             modelRec.load_state_dict(best_model_state)
         return modelRec
