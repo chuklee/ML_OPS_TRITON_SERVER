@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Callable
 import torch
 from data_pipeline import DataPipeline
 from model_serving import ModelServer
@@ -15,8 +15,21 @@ import shutil
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import gc
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI()
+
+# Add a global variable to track training status
+training_status = {
+    "is_training": False,
+    "status": "idle",
+    "progress": 0,
+    "error": None
+}
+
+# Create a thread pool executor for CPU-intensive tasks
+thread_pool = ThreadPoolExecutor()
 
 def initialize_model():
     """Initialize or train the model if it doesn't exist"""
@@ -118,17 +131,29 @@ class TrainingResponse(BaseModel):
     metrics: Dict[str, float]
     model_path: str
 
-@app.post("/model/train")
-async def train_new_model(config: TrainingConfig) -> TrainingResponse:
-    """Endpoint to train a new model"""
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+async def train_model_task(config: TrainingConfig):
+    """Background task for model training"""
+    global training_status
+    training_status = {"is_training": True, "status": "starting", "progress": 0, "error": None}
+    
     try:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # Download and prepare dataset
-        download_and_extract_dataset()
-        df_movies, df_ratings, df_users = read_dataset()
-        df_combined = preprocess_dataset(df_movies, df_ratings, df_users)
+        # Download and prepare dataset in a separate thread
+        training_status["status"] = "downloading_data"
+        await asyncio.get_event_loop().run_in_executor(thread_pool, download_and_extract_dataset)
+        df_movies, df_ratings, df_users = await asyncio.get_event_loop().run_in_executor(
+            thread_pool, read_dataset)
+        training_status["progress"] = 10
+        
+        # Preprocess data in a separate thread
+        training_status["status"] = "preprocessing"
+        training_status["progress"] = 20
+        df_combined = await asyncio.get_event_loop().run_in_executor(
+            thread_pool, 
+            lambda: preprocess_dataset(df_movies, df_ratings, df_users)
+        )
+        training_status["progress"] = 30
         
         # Calculate user and item counts
         max_user_id = df_combined["user_id"].max()
@@ -136,10 +161,15 @@ async def train_new_model(config: TrainingConfig) -> TrainingResponse:
         userCount = max_user_id + 1
         itemCount = max_item_id + 1
         
-        # Prepare train and test datasets
-        df_train, df_test = prepare_data(df_combined, df_movies, df_users)
+        # Prepare data in a separate thread
+        training_status["status"] = "preparing_data"
+        training_status["progress"] = 40
+        df_train, df_test = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            lambda: prepare_data(df_combined, df_movies, df_users)
+        )
+        training_status["progress"] = 50
         
-        # Convert config to dict for train_model
         train_config = {
             "epochs": config.epochs,
             "batch_size": config.batch_size,
@@ -147,19 +177,46 @@ async def train_new_model(config: TrainingConfig) -> TrainingResponse:
             "user_embSize": config.user_emb_size,
             "item_embSize": config.item_emb_size
         }
+
+        # Create a progress callback for the training
+        def progress_callback(epoch: int, total_epochs: int, batch: int, total_batches: int):
+            progress = 60 + (epoch * total_batches + batch) / (total_epochs * total_batches) * 30
+            training_status["progress"] = int(progress)
+            training_status["status"] = f"training (epoch {epoch + 1}/{total_epochs})"
+
+        # Train model in a separate thread
+        training_status["status"] = "training"
+        training_status["progress"] = 60
         
-        # Train model
-        model = train_model(df_train, df_test, userCount, itemCount, device, train_config)
+        # Modify train_model call to accept and use the progress callback
+        model = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            lambda: train_model(
+                df_train, df_test, userCount, itemCount, device, train_config, 
+                progress_callback=progress_callback
+            )
+        )
         
-        # Save model and get metrics
+        # Save model in a separate thread
+        training_status["status"] = "saving model"
+        training_status["progress"] = 90
+        
         model_path = 'models/modelRec.pth'
-        torch.save({
+        save_dict = {
             'model_state_dict': model.state_dict(),
             'val_accuracy': model.val_accuracy if hasattr(model, 'val_accuracy') else 0.0,
             'train_loss': model.train_loss if hasattr(model, 'train_loss') else 0.0
-        }, model_path)
+        }
         
-        # Save to MLflow with metadata
+        await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            lambda: torch.save(save_dict, model_path)
+        )
+        
+        # Save to MLflow
+        training_status["status"] = "saving to MLflow"
+        training_status["progress"] = 95
+        
         metadata = {
             'training_date': datetime.now().strftime("%Y-%m-%d"),
             'model_version': '1.0',
@@ -168,21 +225,47 @@ async def train_new_model(config: TrainingConfig) -> TrainingResponse:
             'train_loss': model.train_loss if hasattr(model, 'train_loss') else 0.0
         }
         
-        experiment_id = save_production_model(model, "modelRec", metadata)
-        
-        # Return response
-        return TrainingResponse(
-            status="success",
-            experiment_id=str(experiment_id) if experiment_id else None,
-            metrics={
-                "final_val_accuracy": float(model.val_accuracy) if hasattr(model, 'val_accuracy') else 0.0,
-                "final_train_loss": float(model.train_loss) if hasattr(model, 'train_loss') else 0.0
-            },
-            model_path=model_path
+        experiment_id = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            lambda: save_production_model(model, "modelRec", metadata)
         )
         
+        training_status.update({
+            "is_training": False,
+            "status": "completed",
+            "progress": 100,
+            "error": None,
+            "experiment_id": str(experiment_id) if experiment_id else None,
+            "metrics": {
+                "final_val_accuracy": float(model.val_accuracy) if hasattr(model, 'val_accuracy') else 0.0,
+                "final_train_loss": float(model.train_loss) if hasattr(model, 'train_loss') else 0.0
+            }
+        })
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        training_status.update({
+            "is_training": False,
+            "status": "failed",
+            "error": str(e)
+        })
+
+@app.post("/model/train")
+async def train_new_model(background_tasks: BackgroundTasks, config: TrainingConfig):
+    """Endpoint to start model training in the background"""
+    if training_status["is_training"]:
+        raise HTTPException(status_code=409, detail="Training already in progress")
+    
+    background_tasks.add_task(train_model_task, config)
+    
+    return {
+        "status": "training_started",
+        "message": "Model training has been started in the background"
+    }
+
+@app.get("/model/training-status")
+async def get_training_status():
+    """Get the current status of model training"""
+    return training_status
 
 @app.get("/model/status")
 async def get_model_status():

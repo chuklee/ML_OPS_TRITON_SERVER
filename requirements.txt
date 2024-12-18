@@ -11,6 +11,7 @@ jupyter
 ipywidgets
 
 # API et serveur
+asyncio
 fastapi
 uvicorn
 python-multipart

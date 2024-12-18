@@ -80,29 +80,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Running the System without Docker
-
-1. **Initialize MLflow**:
-```bash
-python init_mlflow.py
-```
-
-2. **Train the model**:
-```bash
-python train.py
-```
-
-3. **Start the API server**:
-```bash
-python online_serving.py
-```
-
-4. **Access the web interface**:
-- Open `http://localhost:8000/static/index.html` in your browser
-- Try the demo by creating a new user and getting recommendations
-
-
-### Running the System with Docker
+### Running the System
 
 1. **Run the Docker container**:
 ```bash

@@ -44,8 +44,10 @@ import warnings
 warnings.filterwarnings('ignore', category=MovedIn20Warning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
+from typing import Callable
 
-def train_model(df_train, df_test, userCount, itemCount, device, config):
+
+def train_model(df_train, df_test, userCount, itemCount, device, config, progress_callback: Callable = None):
     """
     Train the recommendation model with MLflow tracking
     """
@@ -105,22 +107,53 @@ def train_model(df_train, df_test, userCount, itemCount, device, config):
         history = {'train_loss': [], 'val_loss': [], 'val_accuracy': []}
 
         # Training loop
+        total_batches = len(ds_trainLoader)
         best_val_accuracy = 0.0
         best_model_state = None
+        
         for epoch in range(config["epochs"]):
             # Training
-            train_loss = train_epoch(modelRec, ds_trainLoader, criterion, optim, scaler, device)
-            
+            for batch_idx, (x1, x2, y, _) in enumerate(ds_trainLoader):
+                # Update progress if callback is provided
+                if progress_callback:
+                    progress_callback(epoch, config["epochs"], batch_idx, total_batches)
+                    
+                x1, x2, y = x1.to(device), x2.to(device), y.to(device)
+                
+                optim.zero_grad()
+                with torch.autocast(device_type='cuda'):
+                    logits = modelRec(x1, x2)
+                    loss = criterion(logits, y.squeeze())
+                
+                scaler.scale(loss).backward()
+                scaler.step(optim)
+                scaler.update()
+                
+                history['train_loss'].append(loss.item())
+                preds = torch.argmax(logits, dim=1)
+                history['val_accuracy'].append(accuracy_score(y.squeeze().cpu().numpy(), preds.cpu().numpy()))
+                
+                # TensorBoard logging
+                writer.add_scalar('Train/Loss', loss.item(), epoch * total_batches + batch_idx)
+                writer.add_scalar('Validation/Accuracy', history['val_accuracy'][-1], epoch * total_batches + batch_idx)
+
+                print(f"Epoch {epoch+1} - Train Loss: {loss.item():.4f} - Val Accuracy: {history['val_accuracy'][-1]:.4f}")
+
+                # Save best model
+                if history['val_accuracy'][-1] > best_val_accuracy:
+                    best_val_accuracy = history['val_accuracy'][-1]
+                    best_model_state = modelRec.state_dict()
+
             # Validation
             val_loss, val_accuracy = validate_epoch(modelRec, ds_testLoader, criterion, device)
 
-            history['train_loss'].append(train_loss)
+            history['train_loss'].append(history['train_loss'][-1])
             history['val_loss'].append(val_loss)
             history['val_accuracy'].append(val_accuracy)
 
             # Log metrics
             mlflow.log_metrics({
-                "train_loss": train_loss,
+                "train_loss": history['train_loss'][-1],
                 "val_loss": val_loss,
                 "val_accuracy": val_accuracy
             }, step=epoch)
@@ -128,16 +161,11 @@ def train_model(df_train, df_test, userCount, itemCount, device, config):
             create_and_log_plots(history, epoch)
 
             # TensorBoard logging
-            writer.add_scalar('Train/Loss', train_loss, epoch)
+            writer.add_scalar('Train/Loss', history['train_loss'][-1], epoch)
             writer.add_scalar('Validation/Loss', val_loss, epoch)
             writer.add_scalar('Validation/Accuracy', val_accuracy, epoch)
 
-            print(f"Epoch {epoch+1} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f} - Val Accuracy: {val_accuracy:.4f}")
-
-            # Save best model
-            if val_accuracy > best_val_accuracy:
-                best_val_accuracy = val_accuracy
-                best_model_state = modelRec.state_dict()
+            print(f"Epoch {epoch+1} - Train Loss: {history['train_loss'][-1]:.4f} - Val Loss: {val_loss:.4f} - Val Accuracy: {val_accuracy:.4f}")
 
         # Store final metrics in the model for easy access
         modelRec.val_accuracy = best_val_accuracy
