@@ -256,3 +256,45 @@ button:hover {
     margin-bottom: 1rem;
     border-radius: 6px;
 }
+
+/* Admin Panel */
+.admin-panel {
+    background-color: white;
+    padding: 2rem;
+    border-radius: 10px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    margin-bottom: 2rem;
+    text-align: center;
+}
+
+.train-button {
+    background: linear-gradient(to right, #e74c3c, #c0392b);
+    max-width: 200px;
+    margin: 0 auto;
+}
+
+.train-button:hover {
+    background: linear-gradient(to right, #c0392b, #962d22);
+}
+
+.train-button:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+.training-status {
+    margin-top: 1rem;
+    color: #666;
+}
+
+.loading-spinner {
+    width: 30px;
+    height: 30px;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #3498db;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 1rem auto;
+}

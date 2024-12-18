@@ -11,6 +11,7 @@ services:
       - ./models:/app/models
       - ./mlruns:/app/mlruns
       - ./data:/app/data
+      - ./static:/app/static
     environment:
       - REDIS_HOST=redis
       - MLFLOW_TRACKING_URI=file:///app/mlruns

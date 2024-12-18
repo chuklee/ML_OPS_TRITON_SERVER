@@ -1,3 +1,43 @@
+document.getElementById('trainButton').addEventListener('click', async () => {
+    const trainButton = document.getElementById('trainButton');
+    const trainingStatus = document.getElementById('trainingStatus');
+    
+    try {
+        // Disable button and show loading state
+        trainButton.disabled = true;
+        trainingStatus.style.display = 'block';
+        
+        const response = await fetch('/model/train', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                epochs: 2,
+                batch_size: 512,
+                learning_rate: 0.0001,
+                user_emb_size: 32,
+                item_emb_size: 32
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+            alert(`Training completed successfully!\nValidation Accuracy: ${result.metrics.final_val_accuracy.toFixed(4)}`);
+        } else {
+            throw new Error('Training failed');
+        }
+    } catch (error) {
+        console.error('Training error:', error);
+        alert('Error during training. Please check the console for details.');
+    } finally {
+        // Re-enable button and hide loading state
+        trainButton.disabled = false;
+        trainingStatus.style.display = 'none';
+    }
+});
+
 document.getElementById('newUserForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     
