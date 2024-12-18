@@ -2,19 +2,23 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install mlflow psycopg2-binary
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install mlflow psycopg2-binary pyyaml
 
 # Create mlruns directory with proper permissions
-RUN mkdir -p /mlruns \
-    && chmod -R 777 /mlruns \
-    && chown -R 1000:1000 /mlruns
+RUN mkdir -p /app/mlruns \
+    && chmod -R 777 /app/mlruns \
+    && chown -R 1000:1000 /app/mlruns
 
-ENV MLFLOW_TRACKING_URI=file:///mlruns
+ENV MLFLOW_TRACKING_URI=file:///app/mlruns
 
 EXPOSE 5000
 
 CMD ["mlflow", "server", \
      "--host", "0.0.0.0", \
      "--port", "5000", \
-     "--backend-store-uri", "file:///mlruns", \
-     "--default-artifact-root", "file:///mlruns"] 
+     "--backend-store-uri", "file:///app/mlruns", \
+     "--default-artifact-root", "file:///app/mlruns"] 

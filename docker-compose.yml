@@ -9,7 +9,7 @@ services:
       - "8000:8000"
     volumes:
       - ./models:/app/models
-      - ./mlruns:/app/mlruns
+      - mlruns_data:/app/mlruns
       - ./data:/app/data
       - ./static:/app/static
     environment:
@@ -25,6 +25,7 @@ services:
               capabilities: [gpu]
     depends_on:
       - redis
+      - mlflow
 
   redis:
     image: redis:6.2-alpine
@@ -44,7 +45,7 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./mlruns:/app/mlruns
+      - mlruns_data:/app/mlruns
     environment:
       - MLFLOW_TRACKING_URI=file:///app/mlruns
       - TOKENIZERS_PARALLELISM=false
@@ -55,3 +56,4 @@ services:
 
 volumes:
   redis_data:
+  mlruns_data:

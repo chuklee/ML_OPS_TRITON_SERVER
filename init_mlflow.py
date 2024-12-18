@@ -2,6 +2,7 @@ import mlflow
 import os
 import yaml
 from datetime import datetime
+import time
 
 def init_mlflow():
     """Initialize MLflow tracking"""
@@ -9,66 +10,40 @@ def init_mlflow():
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "file:///app/mlruns")
     mlflow.set_tracking_uri(tracking_uri)
 
-    # Set experiment name and base directory
+    # Set experiment name
     experiment_name = "recommendation_experiment"
     mlruns_dir = tracking_uri.replace("file://", "").replace("file:", "")
     
-    try:
-        # Ensure base mlruns directory exists
-        os.makedirs(mlruns_dir, exist_ok=True)
-        
-        # Create or get experiment
-        experiment = mlflow.get_experiment_by_name(experiment_name)
-        
-        if experiment is None:
-            # Create experiment directory
-            experiment_dir = os.path.join(mlruns_dir, experiment_name)
-            os.makedirs(experiment_dir, exist_ok=True)
+    # Ensure directories exist with proper permissions
+    os.makedirs(mlruns_dir, exist_ok=True)
+    os.chmod(mlruns_dir, 0o777)
+    
+    # Wait for MLflow server to be ready
+    max_retries = 5
+    for i in range(max_retries):
+        try:
+            # Try to create or get experiment
+            experiment = mlflow.get_experiment_by_name(experiment_name)
             
-            # Create meta.yaml for the experiment
-            meta = {
-                "artifact_location": os.path.abspath(experiment_dir),
-                "creation_time": int(datetime.now().timestamp() * 1000),
-                "experiment_id": "1",  # Fixed ID for consistency
-                "last_update_time": int(datetime.now().timestamp() * 1000),
-                "lifecycle_stage": "active",
-                "name": experiment_name,
-                "tags": {}
-            }
+            if experiment is None:
+                experiment_id = mlflow.create_experiment(
+                    experiment_name,
+                    artifact_location=os.path.join(mlruns_dir, experiment_name)
+                )
+            else:
+                experiment_id = experiment.experiment_id
+                
+            mlflow.set_experiment(experiment_name)
+            print(f"MLflow initialized with experiment ID: {experiment_id}")
+            return experiment_id
             
-            # Write experiment meta.yaml
-            meta_path = os.path.join(experiment_dir, "meta.yaml")
-            with open(meta_path, "w") as f:
-                yaml.safe_dump(meta, f)
-            
-            # Create root meta.yaml if it doesn't exist
-            root_meta_path = os.path.join(mlruns_dir, "meta.yaml")
-            if not os.path.exists(root_meta_path):
-                root_meta = {
-                    "experiments": {
-                        "1": {
-                            "artifact_location": os.path.abspath(experiment_dir),
-                            "creation_time": meta["creation_time"],
-                            "experiment_id": "1",
-                            "last_update_time": meta["last_update_time"],
-                            "lifecycle_stage": "active",
-                            "name": experiment_name
-                        }
-                    }
-                }
-                with open(root_meta_path, "w") as f:
-                    yaml.safe_dump(root_meta, f)
-            
-            experiment_id = "1"
-        else:
-            experiment_id = experiment.experiment_id
-            
-        mlflow.set_experiment(experiment_name)
-        return experiment_id
-        
-    except Exception as e:
-        print(f"Warning during MLflow initialization: {e}")
-        return None
+        except Exception as e:
+            if i < max_retries - 1:
+                print(f"Retrying MLflow initialization ({i+1}/{max_retries}): {e}")
+                time.sleep(2)  # Wait before retrying
+            else:
+                print(f"Failed to initialize MLflow after {max_retries} attempts: {e}")
+                return None
 
 if __name__ == "__main__":
     init_mlflow()
